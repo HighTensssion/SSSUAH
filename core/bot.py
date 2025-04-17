@@ -1,13 +1,16 @@
 from __future__ import annotations
-
-from typing import Optional
-from discord.ext import commands
-from logging import getLogger; log = getLogger("Bot")
 import discord
+import os
+import sys
 
-__all__ = (
-    "Bot",
-)
+from typing import Optional, Union
+from .embed import Embed
+from discord.ext import commands
+from logging import getLogger
+
+log = getLogger("Bot")
+
+__all__ = ("Bot",)
 
 
 class Bot(commands.AutoShardedBot):
@@ -18,13 +21,61 @@ class Bot(commands.AutoShardedBot):
             chunk_guild_at_startup=False
         )
 
+    async def setup_hook(self) -> None:
+        for file in os.listdir('cogs'):
+            if not file.startswith("_"):
+                await self.load_extension(f"cogs.{file}.plugin")
+
     async def on_ready(self) -> None:
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
+    
+    async def on_connect(self) -> None:
+        if '-sync' in sys.argv:
+            synced_commands = await self.tree.sync()
+            log.info(f"Successfully synced {len(synced_commands)} commands.")
 
-    async def success(self, content: str, interaction: discord.Interaction, ephemeral: Optional[bool]):
-        """This function will send a success message."""
-        pass
-
-    async def error(self, content: str, interaction: discord.Interaction, ephemeral: Optional[bool]):
-        """This function will send a success message."""
-        pass
+    async def success(
+            self,
+            message: str,
+            interaction: discord.Interaction,
+            *,
+            ephemeral: Optional[bool] = False,
+            embed: Optional[bool] = True
+    ) -> Optional[discord.WebhookMessage]:
+        if embed:
+            if interaction.response.is_done():
+                return await interaction.followup.send(
+                    embed=Embed(description=message, color=discord.Colour.green()),
+                    ephemeral=ephemeral
+                )
+            return await interaction.response.send_message(
+                embed=Embed(description=message, color=discord.Colour.green()),
+                ephemeral=ephemeral
+            )
+        else:
+            if interaction.response.is_done():
+                return await interaction.followup.send(content=f"✔ | {message}", ephemeral=ephemeral)
+            return await interaction.response.send_message(content=f"✔ | {message}", ephemeral=ephemeral)
+        
+    async def error(
+        self,
+        message: str,
+        interaction: discord.Interaction,
+        *,
+        ephemeral: Optional[bool] = False,
+        embed: Optional[bool] = True
+    ) -> Optional[discord.WebhookMessage]:
+        if embed:
+            if interaction.response.is_done():
+                return await interaction.followup.send(
+                    embed=Embed(description=message, color=discord.Colour.green()),
+                    ephemeral=ephemeral
+                )
+            return await interaction.response.send_message(
+                embed=Embed(description=message, color=discord.Colour.green()),
+                ephemeral=ephemeral
+            )
+        else:
+            if interaction.response.is_done():
+                return await interaction.followup.send(content=f"❌ | {message}", ephemeral=ephemeral)
+            return await interaction.response.send_message(content=f"❌ | {message}", ephemeral=ephemeral)
