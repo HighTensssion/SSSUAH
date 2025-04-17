@@ -7,6 +7,7 @@ from typing import Optional, Union
 from .embed import Embed
 from discord.ext import commands
 from logging import getLogger
+from tortoise import Tortoise
 
 log = getLogger("Bot")
 
@@ -22,6 +23,13 @@ class Bot(commands.AutoShardedBot):
         )
 
     async def setup_hook(self) -> None:
+        await Tortoise.init(
+            db_url=f"postgres://{os.getenv("user")}:{os.getenv("password")}@{os.getenv("host")}:{os.getenv("port")}/{os.getenv("dbname")}",
+            modules={
+                "models": ['core.models']
+            }
+        )
+        await Tortoise.generate_schemas(safe=True)
         for file in os.listdir('cogs'):
             if not file.startswith("_"):
                 await self.load_extension(f"cogs.{file}.plugin")

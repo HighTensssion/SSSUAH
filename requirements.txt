@@ -1,1 +1,6 @@
 discord.py
+black
+humanfriendly
+pytz
+typing_extensions
+tortoise-orm[asyncpg]
