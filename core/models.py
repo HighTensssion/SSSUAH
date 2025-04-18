@@ -4,7 +4,7 @@ import discord
 from tortoise.models import Model
 from tortoise import fields
 
-__all__ = ("AfkModel", "Economy Model")
+__all__ = ("AfkModel", "EconomyModel")
 
 class AfkModel(Model):
     id = fields.BigIntField(pk=True, unique=True)

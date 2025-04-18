@@ -34,6 +34,9 @@ class Bot(commands.AutoShardedBot):
             if not file.startswith("_"):
                 await self.load_extension(f"cogs.{file}.plugin")
 
+        synced_commands = await self.tree.sync()
+        log.info(f"Successfully synced {len(synced_commands)} commands.")
+
     async def on_ready(self) -> None:
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
     

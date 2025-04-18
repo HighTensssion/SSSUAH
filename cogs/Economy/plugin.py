@@ -10,7 +10,6 @@ class EconomyPlugin(Plugin):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
 
-    
     async def get_user_data(self, id: int) -> EconomyModel:
         try:
             return await EconomyModel.get(pk=id)
@@ -20,6 +19,7 @@ class EconomyPlugin(Plugin):
     @app_commands.command(
         name="balance", description="Show your balance or another user's balance."
     )
+    # @app_commands.guilds(discord.Object(id=1340196483479371797))
     async def balance_command(self, interaction: discord.Interaction, user: discord.User | None):
         target = user or interaction.user
         data = await self.get_user_data(id=target.id)
