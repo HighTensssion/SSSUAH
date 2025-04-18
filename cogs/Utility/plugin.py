@@ -21,7 +21,7 @@ class Utility(Plugin):
         afk = await AfkModel.get_or_none(id=message.author.id, guild_id=message.guild.id)
         if afk:
             await message.reply(
-                f"Welcome back {afk.mention}! You were afk for {afk.formatted_since}"
+                f"Welcome back {afk.mention}! You were afk since {afk.formatted_since}"
             )
             return await afk.delete()
         
