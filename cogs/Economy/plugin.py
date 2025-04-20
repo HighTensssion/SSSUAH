@@ -25,17 +25,41 @@ class EconomyPlugin(Plugin):
         except DoesNotExist:
             return await EconomyModel.create(id=id)
     
-    @app_commands.command(
-        name="balance", description="Show your balance or another user's balance."
-    )
-    async def balance_command(self, interaction: discord.Interaction, user: discord.User):
+    @app_commands.command(name="balance", description="Show your balance or another user's balance.")
+    async def balance_command(self, interaction: discord.Interaction, user: discord.User | None):
         target = user or interaction.user
         data = await self.get_user_data(id=target.id)
-        prefix = f"Your ({user})" if not user else f"{user}'s"
+        prefix = f"Your ({target})" if not user else f"{user}'s"
         await self.bot.success(
-            f"{prefix} total balance is: **{data.balance:.2f}**", interaction
+            f"{target} has **{data.balance:.0f} como.**", interaction
         )
     
+    @app_commands.command(name="daily", description="Claim a random amount of como daily.")
+    @app_commands.checks.cooldown(1, 86400, key=lambda i: (i.user.id,))
+    async def daily_command(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        data = await self.get_user_data(id=user_id)
+        amount = random.randint(1, 100)
+        data.balance += amount
+        await data.save()
+        await self.bot.success(
+            f"You received **{amount} como.**", interaction
+        )
+    @daily_command.error
+    async def daily_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            remaining = int(error.retry_after)
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            seconds = remaining % 60
+            time_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+            await interaction.response.send_message(
+                f"Try again in **{time_str}**.",
+                ephemeral=True
+            )
+        else:
+            raise error
+
     async def rarity_choice(self, class_, weights):
         if not class_:
             return None
@@ -88,9 +112,7 @@ class EconomyPlugin(Plugin):
 
         return card
     
-    @app_commands.command(
-            name="spin", description="Collect a random objekt!"
-    )
+    @app_commands.command(name="spin", description="Collect a random objekt!")
     @app_commands.describe(season="Select a season to spin from (leave blank to spin from all seasons).")
     @app_commands.choices(
         season=[
