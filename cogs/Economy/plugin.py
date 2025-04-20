@@ -10,6 +10,7 @@ import requests
 from core import Bot, EconomyModel, ObjektModel, CollectionModel
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
+from tortoise.expressions import Q
 from tortoise.functions import Function as RandomFunction
 from .. import Plugin
 from discord import app_commands
@@ -35,10 +36,43 @@ class EconomyPlugin(Plugin):
             f"{prefix} total balance is: **{data.balance:.2f}**", interaction
         )
     
-    async def give_random_objekt(self, user_id: int):
-        # card = await ObjektModel.raw("SELECT * FROM objekts ORDER BY RANDOM() LIMIT 1")
+    async def rarity_choice(self, class_, weights):
+        if not class_:
+            return None
+        return random.choices(class_, weights=weights)[0]
 
-        ids = await ObjektModel.all().values_list("id", flat=True)
+    async def give_random_objekt(self, user_id: int, season: str | None = None):
+        if season == "Atom01":
+            class_ = ["Zero", "Welcome", "First", "Special", "Double", "Never"]
+            weights = [0.003,0.017,0.25,0.1,0.18,0.45]
+            class_choice = await self.rarity_choice(class_, weights)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+        elif season == "Binary01":
+            class_ = ["Welcome", "First", "Special", "Double", "Never"]
+            weights = [0.01,0.25,0.08,0.21,0.45]
+            class_choice = await self.rarity_choice(class_, weights)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+        elif season == "Cream01":
+            class_ = ["Welcome", "First", "Special", "Double", "Never"]
+            weights = [0.012,0.25,0.068,0.22,0.45]
+            class_choice = await self.rarity_choice(class_, weights)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+        elif season == "Divine01":
+            class_ = ["Welcome", "First", "Special", "Double", "Premier", "Never"]
+            weights = [0.0081,0.25,0.0616,0.23,0.008622,0.45]
+            class_choice = await self.rarity_choice(class_, weights)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+        elif season == "Ever01":
+            class_ = ["Welcome", "First", "Special", "Double", "Premier", "Never"]
+            weights = [0.008277,0.35,0.049101,0.234,0.008622,0.35]
+            class_choice = await self.rarity_choice(class_, weights)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+        else:
+            class_ = ["Zero", "Welcome", "First", "Special", "Double", "Premier", "Never"]
+            weights = [0.00036,0.00852,0.35,0.06771,0.22104,0.00237,0.35]
+            class_choice = await self.rarity_choice(class_, weights)
+            ids = await ObjektModel.filter(class_=class_choice).values_list("id", flat=True)
+        
         if not ids:
             return None
         
@@ -57,20 +91,31 @@ class EconomyPlugin(Plugin):
     @app_commands.command(
             name="spin", description="Collect a random objekt!"
     )
+    @app_commands.describe(season="Select a season to spin from (leave blank to spin from all seasons).")
+    @app_commands.choices(
+        season=[
+            app_commands.Choice(name="atom", value="Atom01"),
+            app_commands.Choice(name="binary", value="Binary01"),
+            app_commands.Choice(name="cream", value="Cream01"),
+            app_commands.Choice(name="divine", value="Divine01"),
+            app_commands.Choice(name="ever", value="Ever01")
+        ]
+    )
     @app_commands.checks.cooldown(1,10, key=lambda i: (i.user.id,))
-    async def spin_command(self, interaction: discord.Interaction):
+    async def spin_command(self, interaction: discord.Interaction, season: app_commands.Choice[str] | None = None):
         user_id = interaction.user.id
-        card = await self.give_random_objekt(user_id)
+        season_value = season.value if isinstance(season, app_commands.Choice) else season
+        card = await self.give_random_objekt(user_id, season=season_value)
 
         if card:
             embed = discord.Embed(
-                title=f"{card.member} - {card.season} {card.series}",
-                description=f"Group: {card.member}",
+                title="You received an objekt!",
                 color=0xFF69B4
             )
             if card.image_url:
+                embed.description = f"[{card.member} {card.season} {card.series}]({card.image_url})"
                 embed.set_image(url=card.image_url)
-            embed.set_footer(text="You pulled a new objekt!")
+            #embed.set_footer(text=f"You pulled a new [objekt!]({card.image_url})")
             await interaction.response.send_message(embed=embed)
         else:
             await interaction.response.send_message("No objekts found in the database.")

@@ -32,20 +32,22 @@ class EconomyModel(Model):
 
 class ObjektModel(Model):
     id: int = fields.IntField(pk=True)
+    objekt_name: str = fields.TextField()
     member: str | None = fields.TextField(null=True)
     season: str | None = fields.TextField(null=True)
     class_: str | None = fields.TextField(null=True, source_field="class")
     series: str | None = fields.TextField(null=True)
     image_url: str | None = fields.TextField(null=True)
-    copies: int = fields.BigIntField(default=1)
     rarity: int = fields.BigIntField(default=1)
 
     class Meta:
         table = "objekts"
 
 class CollectionModel(Model):
+    id: int = fields.IntField(pk=True)
     user_id: str = fields.TextField()
     card_id: int = fields.IntField()
+    created_at = fields.DatetimeField(auto_now=True)
 
     objekt: fields.ForeignKeyRelation["ObjektModel"] = fields.ForeignKeyField(
         "models.ObjektModel", related_name="collections", on_delete=fields.CASCADE
