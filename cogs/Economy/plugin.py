@@ -196,22 +196,92 @@ class EconomyPlugin(Plugin):
     @app_commands.command(name="inv", description="View your inventory or another user's inventory.")
     @app_commands.describe(
         user="The user whose inventory will be displayed. (Leave blank for your own)",
-        sort_by="Sort the inventory by member, season, or class. (Leave blank to sort inventory by date added)"
+        sort_by="Sort the inventory by member, season, class, series, or amount owned. (Leave blank to sort inventory by date added)",
+        filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
+        filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
+        filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
         descending="Sort the inventory in descending order. (Leave blank to sort in ascending order)"
     )
     @app_commands.choices(
         sort_by=[
             app_commands.Choice(name="member", value="member"),
             app_commands.Choice(name="season", value="season"),
-            app_commands.Choice(name="class", value="class")
+            app_commands.Choice(name="class", value="class"),
+            app_commands.Choice(name="series", value="series"),
+            app_commands.Choice(name="copies", value="copies")
+        ],
+        filter_by_member=[
+            app_commands.Choice(name="Chaewon", value="ChaeWon"),
+            app_commands.Choice(name="Chaeyeon", value="ChaeYeon"),
+            app_commands.Choice(name="Dahyun", value="DaHyun"),
+            app_commands.Choice(name="Hayeon", value="HaYeon"),
+            app_commands.Choice(name="Hyerin", value="HyeRin"),
+            app_commands.Choice(name="Jiwoo", value="JiWoo"),
+            app_commands.Choice(name="Jiyeon", value="JiYeon"),
+            app_commands.Choice(name="Joobin", value="JooBin"),
+            app_commands.Choice(name="Kaede", value="Kaede"),
+            app_commands.Choice(name="Kotone", value="Kotone"),
+            app_commands.Choice(name="Lynn", value="Lynn"),
+            app_commands.Choice(name="Mayu", value="Mayu"),
+            app_commands.Choice(name="Nakyoung", value="NaKyoung"),
+            app_commands.Choice(name="Nien", value="Nien"),
+            app_commands.Choice(name="Seoah", value="SeoAh"),
+            app_commands.Choice(name="Seoyeon", value="SeoYeon"),
+            app_commands.Choice(name="Shion", value="ShiOn"),
+            app_commands.Choice(name="Sohyun", value="SoHyun"),
+            app_commands.Choice(name="Soomin", value="SooMin"),
+            app_commands.Choice(name="Sullin", value="Sullin"),
+            app_commands.Choice(name="Xinyu", value="Xinyu"),
+            app_commands.Choice(name="Yeonji", value="YeonJi"),
+            app_commands.Choice(name="Yooyeon", value="YooYeon"),
+            app_commands.Choice(name="Yubin", value="YuBin")
+        ],
+        filter_by_season=[
+            app_commands.Choice(name="atom", value="Atom01"),
+            app_commands.Choice(name="binary", value="Binary01"),
+            app_commands.Choice(name="cream", value="Cream01"),
+            app_commands.Choice(name="divine", value="Divine01"),
+            app_commands.Choice(name="ever", value="Ever01")
+        ],
+        filter_by_class=[
+            app_commands.Choice(name="zero", value="Zero"),
+            app_commands.Choice(name="welcome", value="Welcome"),
+            app_commands.Choice(name="first", value="First"),
+            app_commands.Choice(name="special", value="Special"),
+            app_commands.Choice(name="double", value="Double"),
+            app_commands.Choice(name="never", value="Never"),
+            app_commands.Choice(name="premier", value="Premier")
         ]
     )
-    async def inv_command(self, interaction: discord.Interaction, user: discord.User | None = None, sort_by: str | None = None, descending: bool | None = False):
+    async def inv_command(self,
+                          interaction: discord.Interaction,
+                          user: discord.User | None = None,
+                          sort_by: str | None = None,
+                          filter_by_member: str | None = None,
+                          filter_by_season: str | None = None,
+                          filter_by_class: str | None = None,
+                          descending: bool | None = False
+                          ):
         target = user or interaction.user
         user_id = str(target.id)
         prefix = f"Your ({target})" if not user else f"{user}'s" 
 
-        objekts = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt").order_by('created_at', 'objekt__season', 'objekt__series')
+        query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
+
+        if filter_by_member:
+            query = query.filter(objekt__member=filter_by_member)
+        if filter_by_season:
+            query = query.filter(objekt__season=filter_by_season)
+        if filter_by_class:
+            query = query.filter(objekt__class=filter_by_class)
+
+        if descending:
+            query = query.order_by('-updated_at', '-objekt__season', '-objekt__series')
+        else:
+            query = query.order_by('updated_at', 'objekt__season', 'objekt__series')
+
+        objekts = await query
+        
         if not objekts:
             await interaction.send_message(
                 f"{prefix} inventory is empty!"
@@ -234,12 +304,24 @@ class EconomyPlugin(Plugin):
 
         if sort_by:
             sort_by = sort_by.lower()
-            if sort_by  == "member":
-                objekt_data.sort(key=lambda x: x[1].lower())
-            elif sort_by == "season":
-                objekt_data.sort(key=lambda x: x[2].lower())
-            elif sort_by == "class":
-                objekt_data.sort(key=lambda x: x[3].lower())
+            if descending:
+                if sort_by  == "member":
+                    objekt_data.sort(key=lambda x: x[1].lower(), reverse=True)
+                elif sort_by == "season":
+                    objekt_data.sort(key=lambda x: x[2].lower(), reverse=True)
+                elif sort_by == "class" or sort_by == "series":
+                    objekt_data.sort(key=lambda x: x[4].lower(), reverse=True)
+                elif sort_by == "copies":
+                    objekt_data.sort(key=lambda x: x[7], reverse=True)
+            else:
+                if sort_by  == "member":
+                    objekt_data.sort(key=lambda x: x[1].lower())
+                elif sort_by == "season":
+                    objekt_data.sort(key=lambda x: x[2].lower())
+                elif sort_by == "class" or sort_by == "series":
+                    objekt_data.sort(key=lambda x: x[4].lower())
+                elif sort_by == "copies":
+                    objekt_data.sort(key=lambda x: x[7])
         
         objekts_per_page = 9
         total_pages = (len(objekt_data) + objekts_per_page - 1) // objekts_per_page
@@ -328,53 +410,3 @@ class EconomyPlugin(Plugin):
             )
         else:
             raise error
-
-
-
-    #     if total_pages > 1:
-    #         await message.add_reaction("◀️")
-    #         await message.add_reaction("▶️")
-
-    #         def check(reaction, user):
-    #             return (
-    #                 user == interaction.user and
-    #                 str(reaction.emoji) in ["◀️", "▶️"] and
-    #                 reaction.message.id == message.id
-    #             )
-            
-    #         while True:
-    #             try:
-    #                 reaction, _ = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
-
-    #                 if str(reaction.emoji) == "▶️" and page < total_pages - 1:
-    #                     page += 1
-    #                 elif str(reaction.emoji) == "◀️" and page > 0:
-    #                     page -= 1
-    #                 else:
-    #                     await message.remove_reaction(reaction.emoji, interaction.user)
-    #                     continue
-
-    #                 if os.path.exists(collage_path):
-    #                     os.remove(collage_path)
-
-    #                 embed, collage_path = get_page_embed(page)
-    #                 file = discord.File(collage_path, filename="collage.png")
-    #                 embed.set_image(url="attachment://collage.png")
-    #                 await message.edit(embed=embed, attachements=[file])
-    #                 await message.remove_reaction(reaction.emoji, interaction.user)
-
-    #             except asyncio.TimeoutError:
-    #                 break
-    #         if os.path.exists(collage_path):
-    #             os.remove(collage_path)
-
-
-
-    # @app_commands.command(
-    #     name="spin", description="Draw a random objekt."
-    # )
-    # async def spin_command(self, interaction: discord.Interaction, user: discord.User):
-
-
-async def setup(bot: Bot):
-    await bot.add_cog(EconomyPlugin(bot))
