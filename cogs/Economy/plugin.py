@@ -42,9 +42,7 @@ class EconomyPlugin(Plugin):
         amount = random.randint(1, 100)
         data.balance += amount
         await data.save()
-        await self.bot.success(
-            f"You received **{amount} como.**", interaction
-        )
+        await self.bot.success(f"You received **{amount} como.**", interaction)
     @daily_command.error
     async def daily_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):
@@ -108,7 +106,14 @@ class EconomyPlugin(Plugin):
             return None
         
         async with in_transaction():
-            await CollectionModel.create(user_id=str(user_id), card_id=card.id, objekt_id=card.id)
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()
+
+            if collection_entry:
+                collection_entry.copies += 1
+                await collection_entry.save()
+            else:
+                await CollectionModel.create(user_id=str(user_id), objekt_id=card.id, copies=1)
+            #await CollectionModel.create(user_id=str(user_id), card_id=card.id, objekt_id=card.id)
 
         return card
     
@@ -188,67 +193,143 @@ class EconomyPlugin(Plugin):
         collage.save(filename, format='PNG')
         return filename
 
-    # @app_commands.command(
-    #     name="inv", description="View your inventory or another user's inventory."
-    # )
-    # async def inv_command(self, interaction: discord.Interaction, sort_by: str | None = None):
-    #     user_id = str(interaction.user.id)
+    @app_commands.command(name="inv", description="View your inventory or another user's inventory.")
+    @app_commands.describe(
+        user="The user whose inventory will be displayed. (Leave blank for your own)",
+        sort_by="Sort the inventory by member, season, or class. (Leave blank to sort inventory by date added)"
+        descending="Sort the inventory in descending order. (Leave blank to sort in ascending order)"
+    )
+    @app_commands.choices(
+        sort_by=[
+            app_commands.Choice(name="member", value="member"),
+            app_commands.Choice(name="season", value="season"),
+            app_commands.Choice(name="class", value="class")
+        ]
+    )
+    async def inv_command(self, interaction: discord.Interaction, user: discord.User | None = None, sort_by: str | None = None, descending: bool | None = False):
+        target = user or interaction.user
+        user_id = str(target.id)
+        prefix = f"Your ({target})" if not user else f"{user}'s" 
 
-    #     objekts = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
-    #     if not objekts:
-    #         await interaction.response.send_message(
-    #             f"{interaction.user.display_name}, your inventory is empty!"
-    #         )
-    #         return
+        objekts = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt").order_by('created_at', 'objekt__season', 'objekt__series')
+        if not objekts:
+            await interaction.send_message(
+                f"{prefix} inventory is empty!"
+            )
+            return
         
-    #     objekt_data = [
-    #         (
-    #             objekt.objekt.member,
-    #             objekt.objekt.season,
-    #             objekt.objekt.class_,
-    #             objekt.objekt.series,
-    #             objekt.objekt.image_url,
-    #             objekt.objekt.rarity,
-    #             objekt.objekt.copies
-    #         )
-    #         for objekt in objekts
-    #     ]
+        objekt_data = [
+            (
+                objekt.objekt.id,
+                objekt.objekt.member,
+                objekt.objekt.season,
+                objekt.objekt.class_,
+                objekt.objekt.series,
+                objekt.objekt.image_url,
+                objekt.objekt.rarity,
+                objekt.copies
+            )
+            for objekt in objekts
+        ]
 
-    #     if sort_by:
-    #         sort_by = sort_by.lower()
-    #         if sort_by == "member":
-    #             objekt_data.sort(key=lambda x: x[0].lower())
-    #         elif sort_by == "season":
-    #             objekt_data.sort(key=lambda x: x[1].lower())
-    #         elif sort_by == "class":
-    #             objekt_data.sort(key=lambda x: x[2].lower())
+        if sort_by:
+            sort_by = sort_by.lower()
+            if sort_by  == "member":
+                objekt_data.sort(key=lambda x: x[1].lower())
+            elif sort_by == "season":
+                objekt_data.sort(key=lambda x: x[2].lower())
+            elif sort_by == "class":
+                objekt_data.sort(key=lambda x: x[3].lower())
         
-    #     per_page = 6
-    #     total_pages = (len(objekt_data) + per_page -1) // per_page
-    #     page = 0
+        objekts_per_page = 9
+        total_pages = (len(objekt_data) + objekts_per_page - 1) // objekts_per_page
+        page = 0
 
-    #     def get_page_embed(page):
-    #         start = page * per_page
-    #         end = start + per_page
-    #         page_objekts = objekt_data[start:end]
-    #         image_urls = [url for _, _, _, _, url, _ in page_objekts if url]
+        def get_page_embed(page):
+            start = page * objekts_per_page
+            end = start + objekts_per_page
+            page_objekts = objekt_data[start:end]
+            image_urls = [url for _, _, _, _, _, url, _, _ in page_objekts if url]
 
-    #         collage_path = create_collage(image_urls, filename=f'collage_{interaction.user.id}.png')
+            collage_path = self.create_collage(image_urls, filename=f'collage_{user_id}.png')
 
-    #         desc_lines = [
-    #             f"**{member}** {season} {series} - x{copies}"
-    #         ]
-    #         embed = discord.Embed(
-    #             title=f"{interaction.user.display_name}'s Invetory (Page {page + 1}/{total_pages})",
-    #             description='\n'.join(desc_lines),
-    #             color=0xB19CD9
-    #         )
-    #         return embed, collage_path
-        
-    #     embed, collage_path = get_page_embed(page)
-    #     file = discord.File(collage_path, filename="collage.png")
-    #     embed.set_image(url="attachment://collage.png")
-    #     message = await interaction.response.send_message(embed=embed, file=file)
+            desc_lines = [
+                f"**{member}** {season[0]}{series} x{copies}"
+                for _, member, season, _, series, _, _, copies in page_objekts
+            ]
+
+            embed = discord.Embed(
+                title=f"{prefix} Inventory (Page {page + 1}/{total_pages})",
+                description='\n'.join(desc_lines),
+                color=0xB19CD9
+            )
+
+            return embed, collage_path
+
+        await interaction.response.defer()
+
+        embed, collage_path = get_page_embed(page)
+        file = discord.File(collage_path, filename="collage.png")
+        embed.set_image(url="attachment://collage.png")
+        message = await interaction.followup.send(embed=embed, file=file)
+
+        if total_pages > 1:
+            await message.add_reaction("◀️")
+            await message.add_reaction("▶️")
+
+            def check(reaction, user):
+                return (
+                    user == interaction.user and
+                    str(reaction.emoji) in ["◀️", "▶️"] and
+                    reaction.message.id == message.id
+                )
+            
+            while True:
+                try:
+                    reaction, _ = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
+
+                    if str(reaction.emoji) == "▶️" and page < total_pages - 1:
+                        page += 1
+                    elif str(reaction.emoji) == "◀️" and page > 0:
+                        page -= 1
+                    elif str(reaction.emoji) == "◀️" and page == 0:
+                        page = total_pages - 1
+                    elif str(reaction.emoji) == "▶️" and page == total_pages - 1:
+                        page = 0
+                    else:
+                        await message.remove_reaction(reaction.emoji, interaction.user)
+                        continue
+
+                    if os.path.exists(collage_path):
+                        os.remove(collage_path)
+
+                    embed, collage_path = get_page_embed(page)
+                    file = discord.File(collage_path, filename="collage.png")
+                    embed.set_image(url="attachment://collage.png")
+                    await message.edit(embed=embed, attachments=[file])
+                    await message.remove_reaction(reaction.emoji, interaction.user)
+                except asyncio.TimeoutError:
+                    break
+            
+            if os.path.exists(collage_path):
+                os.remove(collage_path)
+
+    @inv_command.error
+    async def spin_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            remaining = int(error.retry_after)
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            seconds = remaining % 60
+            time_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+            await interaction.response.send_message(
+                f"Try again in **{time_str}**.",
+                ephemeral=True
+            )
+        else:
+            raise error
+
+
 
     #     if total_pages > 1:
     #         await message.add_reaction("◀️")

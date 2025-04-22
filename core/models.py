@@ -46,12 +46,12 @@ class ObjektModel(Model):
 class CollectionModel(Model):
     id: int = fields.IntField(pk=True)
     user_id: str = fields.TextField()
-    card_id: int = fields.IntField()
-    created_at = fields.DatetimeField(auto_now=True)
-
     objekt: fields.ForeignKeyRelation["ObjektModel"] = fields.ForeignKeyField(
         "models.ObjektModel", related_name="collections", on_delete=fields.CASCADE
     )
-
+    copies: int = fields.IntField(default=1)
+    created_at = fields.DatetimeField(auto_now=True)
+    updated_at = fields.DatetimeField(auto_now_add=True)
     class Meta:
         table = "collections"
+        unique_together = ("user_id", "objekt")
