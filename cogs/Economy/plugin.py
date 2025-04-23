@@ -78,6 +78,11 @@ class EconomyPlugin(Plugin):
             ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         elif season == "Ever01":
             ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
+        elif season == "rateup":
+            rarity = [7, 1]
+            weights = [0.25, 0.75]
+            rarity_choice = await self.rarity_choice(rarity, weights)
+            ids = await ObjektModel.filter(Q(season="Ever01") | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         else:
             ids = await ObjektModel.filter(rarity=rarity_choice).values_list("id", flat=True)
         
@@ -103,14 +108,15 @@ class EconomyPlugin(Plugin):
         return card
     
     @app_commands.command(name="spin", description="Collect a random objekt!")
-    @app_commands.describe(season="Select a season to spin from (leave blank to spin from all seasons).")
+    @app_commands.describe(season="Select a banner to spin from (leave blank to spin all seasons).")
     @app_commands.choices(
         season=[
             app_commands.Choice(name="atom", value="Atom01"),
             app_commands.Choice(name="binary", value="Binary01"),
             app_commands.Choice(name="cream", value="Cream01"),
             app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01")
+            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.CHoice(name="rateup", value="rateup")
         ]
     )
     @app_commands.checks.cooldown(1,10, key=lambda i: (i.user.id,))
