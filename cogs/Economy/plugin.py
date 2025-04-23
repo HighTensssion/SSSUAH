@@ -58,42 +58,28 @@ class EconomyPlugin(Plugin):
         else:
             raise error
 
-    async def rarity_choice(self, class_, weights):
-        if not class_:
+    async def rarity_choice(self, rarity, weights):
+        if not rarity:
             return None
-        return random.choices(class_, weights=weights)[0]
+        return random.choices(rarity, weights=weights)[0]
 
     async def give_random_objekt(self, user_id: int, season: str | None = None):
+        rarity = [6,5,4,3,2,1]
+        weights = [0.001,0.0135,0.0355,0.1,0.25,0.6]
+        rarity_choice = await self.rarity_choice(rarity, weights)
+
         if season == "Atom01":
-            class_ = ["Zero", "Welcome", "First", "Special", "Double", "Never"]
-            weights = [0.003,0.017,0.25,0.1,0.18,0.45]
-            class_choice = await self.rarity_choice(class_, weights)
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         elif season == "Binary01":
-            class_ = ["Welcome", "First", "Special", "Double", "Never"]
-            weights = [0.01,0.25,0.08,0.21,0.45]
-            class_choice = await self.rarity_choice(class_, weights)
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         elif season == "Cream01":
-            class_ = ["Welcome", "First", "Special", "Double", "Never"]
-            weights = [0.012,0.25,0.068,0.22,0.45]
-            class_choice = await self.rarity_choice(class_, weights)
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         elif season == "Divine01":
-            class_ = ["Welcome", "First", "Special", "Double", "Premier", "Never"]
-            weights = [0.0081,0.25,0.0616,0.23,0.008622,0.45]
-            class_choice = await self.rarity_choice(class_, weights)
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         elif season == "Ever01":
-            class_ = ["Welcome", "First", "Special", "Double", "Premier", "Never"]
-            weights = [0.008277,0.35,0.049101,0.234,0.008622,0.35]
-            class_choice = await self.rarity_choice(class_, weights)
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), class_=class_choice).values_list("id", flat=True)
+            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
         else:
-            class_ = ["Zero", "Welcome", "First", "Special", "Double", "Premier", "Never"]
-            weights = [0.00036,0.00852,0.35,0.06771,0.22104,0.00237,0.35]
-            class_choice = await self.rarity_choice(class_, weights)
-            ids = await ObjektModel.filter(class_=class_choice).values_list("id", flat=True)
+            ids = await ObjektModel.filter(rarity=rarity_choice).values_list("id", flat=True)
         
         if not ids:
             return None
@@ -113,7 +99,6 @@ class EconomyPlugin(Plugin):
                 await collection_entry.save()
             else:
                 await CollectionModel.create(user_id=str(user_id), objekt_id=card.id, copies=1)
-            #await CollectionModel.create(user_id=str(user_id), card_id=card.id, objekt_id=card.id)
 
         return card
     
