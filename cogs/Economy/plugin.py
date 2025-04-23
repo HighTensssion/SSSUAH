@@ -273,7 +273,7 @@ class EconomyPlugin(Plugin):
         if filter_by_season:
             query = query.filter(objekt__season=filter_by_season)
         if filter_by_class:
-            query = query.filter(objekt__class=filter_by_class)
+            query = query.filter(objekt__class_=filter_by_class)
 
         if descending:
             query = query.order_by('-updated_at', '-objekt__season', '-objekt__series')
@@ -410,3 +410,6 @@ class EconomyPlugin(Plugin):
             )
         else:
             raise error
+        
+async def setup(bot: Bot):
+    await bot.add_cog(EconomyPlugin(bot))
