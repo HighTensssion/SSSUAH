@@ -7,11 +7,12 @@ import random
 from PIL import Image
 from io import BytesIO
 import requests
-from core import Bot, EconomyModel, ObjektModel, CollectionModel
+from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
 from tortoise.expressions import Q
 from tortoise.functions import Function as RandomFunction
+from datetime import datetime, timedelta, tzinfo, timezone
 from .. import Plugin
 from discord import app_commands
 
@@ -35,54 +36,66 @@ class EconomyPlugin(Plugin):
         )
     
     @app_commands.command(name="daily", description="Claim a random amount of como daily.")
-    @app_commands.checks.cooldown(1, 86400, key=lambda i: (i.user.id,))
     async def daily_command(self, interaction: discord.Interaction):
         user_id = interaction.user.id
+
+        cooldown = await CooldownModel.filter(user_id=user_id, command="daily").first()
+        now = datetime.now(tz=timezone.utc)
+
+        if cooldown and cooldown.expires_at > now:
+            remaining = cooldown.expires_at - now
+            minutes, seconds = divmod(remaining.total_seconds(), 60)
+            hours, minutes = divmod(minutes, 60)
+            await interaction.response.send_message(
+                f"You are on cooldown! Try again in {int(hours)}h{int(minutes)}m.",
+                ephemeral=True
+            )
+            return
+        
         data = await self.get_user_data(id=user_id)
         amount = random.randint(1, 100)
         data.balance += amount
         await data.save()
-        await self.bot.success(f"You received **{amount} como.**", interaction)
-    @daily_command.error
-    async def daily_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, app_commands.CommandOnCooldown):
-            remaining = int(error.retry_after)
-            hours = remaining // 3600
-            minutes = (remaining % 3600) // 60
-            seconds = remaining % 60
-            time_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
-            await interaction.response.send_message(
-                f"Try again in **{time_str}**.",
-                ephemeral=True
-            )
+
+        expires_at = now + timedelta(hours=24)
+        if cooldown:
+            cooldown.expires_at = expires_at
+            await cooldown.save()
         else:
-            raise error
+            await CooldownModel.create(user_id=user_id, command="daily", expires_at=expires_at)
+
+        await self.bot.success(f"You received **{amount} como.**", interaction)
 
     async def rarity_choice(self, rarity, weights):
         if not rarity:
             return None
         return random.choices(rarity, weights=weights)[0]
 
-    async def give_random_objekt(self, user_id: int, season: str | None = None):
+    async def give_random_objekt(self, user_id: int, banner: str | None = None):
         rarity = [6,5,4,3,2,1]
         weights = [0.001,0.0135,0.0355,0.1,0.25,0.6]
         rarity_choice = await self.rarity_choice(rarity, weights)
-
-        if season == "Atom01":
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
-        elif season == "Binary01":
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
-        elif season == "Cream01":
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
-        elif season == "Divine01":
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
-        elif season == "Ever01":
-            ids = await ObjektModel.filter(Q(season=season) | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
-        elif season == "rateup":
+        
+        if banner == "rateup":
             rarity = [7, 1]
-            weights = [0.25, 0.75]
+            weights = [0.4, 0.6]
             rarity_choice = await self.rarity_choice(rarity, weights)
-            ids = await ObjektModel.filter(Q(season="Ever01") | Q(season="GNDSG00"), rarity=rarity_choice).values_list("id", flat=True)
+            
+            if rarity_choice == 1:
+                sub_rarity = ["Ever01", "GNDSG00"]
+                sub_weights = [0.3, 0.7]
+                season_choice = await self.rarity_choice(sub_rarity, sub_weights)
+                ids = await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat = True)
+            else:
+                ids = await ObjektModel.filter(Q(season="Ever01"), rarity=rarity_choice).values_list("id", flat=True)
+        elif banner:
+            if rarity_choice == 1:
+                sub_rarity = [banner, "GNDSG00"]
+                sub_weights = [0.3, 0.7]
+                season_choice = await self.rarity_choice(sub_rarity, sub_weights)
+                ids = await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat = True)
+            else:
+                ids = await ObjektModel.filter(season=banner, rarity=rarity_choice).values_list("id", flat=True)
         else:
             ids = await ObjektModel.filter(rarity=rarity_choice).values_list("id", flat=True)
         
@@ -108,30 +121,30 @@ class EconomyPlugin(Plugin):
         return card
     
     @app_commands.command(name="spin", description="Collect a random objekt!")
-    @app_commands.describe(season="Select a banner to spin from (leave blank to spin all seasons).")
+    @app_commands.describe(banner="Select a banner to spin from (leave blank to spin all seasons).")
     @app_commands.choices(
-        season=[
+        banner=[
             app_commands.Choice(name="atom", value="Atom01"),
             app_commands.Choice(name="binary", value="Binary01"),
             app_commands.Choice(name="cream", value="Cream01"),
             app_commands.Choice(name="divine", value="Divine01"),
             app_commands.Choice(name="ever", value="Ever01"),
-            app_commands.CHoice(name="rateup", value="rateup")
+            app_commands.Choice(name="rateup", value="rateup")
         ]
     )
     @app_commands.checks.cooldown(1,10, key=lambda i: (i.user.id,))
-    async def spin_command(self, interaction: discord.Interaction, season: app_commands.Choice[str] | None = None):
+    async def spin_command(self, interaction: discord.Interaction, banner: app_commands.Choice[str] | None = None):
         user_id = interaction.user.id
-        season_value = season.value if isinstance(season, app_commands.Choice) else season
-        card = await self.give_random_objekt(user_id, season=season_value)
+        banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
+        card = await self.give_random_objekt(user_id, banner=banner_value)
 
         if card:
             embed = discord.Embed(
-                title="You received an objekt!",
+                title=f"You ({interaction.user}) received an objekt!",
                 color=0xFF69B4
             )
             if card.image_url:
-                embed.description = f"[{card.member} {card.season} {card.series}]({card.image_url})"
+                embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
                 embed.set_image(url=card.image_url)
             #embed.set_footer(text=f"You pulled a new [objekt!]({card.image_url})")
             await interaction.response.send_message(embed=embed)
@@ -191,7 +204,7 @@ class EconomyPlugin(Plugin):
         filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
         filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
         filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
-        descending="Sort the inventory in descending order. (Leave blank to sort in ascending order)"
+        ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)"
     )
     @app_commands.choices(
         sort_by=[
@@ -251,7 +264,7 @@ class EconomyPlugin(Plugin):
                           filter_by_member: str | None = None,
                           filter_by_season: str | None = None,
                           filter_by_class: str | None = None,
-                          descending: bool | None = False
+                          ascending: bool | None = False
                           ):
         target = user or interaction.user
         user_id = str(target.id)
@@ -266,10 +279,10 @@ class EconomyPlugin(Plugin):
         if filter_by_class:
             query = query.filter(objekt__class_=filter_by_class)
 
-        if descending:
-            query = query.order_by('-updated_at', '-objekt__season', '-objekt__series')
+        if ascending:
+            query = query.order_by('updated_at')
         else:
-            query = query.order_by('updated_at', 'objekt__season', 'objekt__series')
+            query = query.order_by('-updated_at')
 
         objekts = await query
         
@@ -295,16 +308,7 @@ class EconomyPlugin(Plugin):
 
         if sort_by:
             sort_by = sort_by.lower()
-            if descending:
-                if sort_by  == "member":
-                    objekt_data.sort(key=lambda x: x[1].lower(), reverse=True)
-                elif sort_by == "season":
-                    objekt_data.sort(key=lambda x: x[2].lower(), reverse=True)
-                elif sort_by == "class" or sort_by == "series":
-                    objekt_data.sort(key=lambda x: x[4].lower(), reverse=True)
-                elif sort_by == "copies":
-                    objekt_data.sort(key=lambda x: x[7], reverse=True)
-            else:
+            if ascending:
                 if sort_by  == "member":
                     objekt_data.sort(key=lambda x: x[1].lower())
                 elif sort_by == "season":
@@ -313,6 +317,15 @@ class EconomyPlugin(Plugin):
                     objekt_data.sort(key=lambda x: x[4].lower())
                 elif sort_by == "copies":
                     objekt_data.sort(key=lambda x: x[7])
+            else:
+                if sort_by  == "member":
+                    objekt_data.sort(key=lambda x: x[1].lower(), reverse=True)
+                elif sort_by == "season":
+                    objekt_data.sort(key=lambda x: x[2].lower(), reverse=True)
+                elif sort_by == "class" or sort_by == "series":
+                    objekt_data.sort(key=lambda x: x[4].lower(), reverse=True)
+                elif sort_by == "copies":
+                    objekt_data.sort(key=lambda x: x[7], reverse=True)
         
         objekts_per_page = 9
         total_pages = (len(objekt_data) + objekts_per_page - 1) // objekts_per_page
@@ -401,6 +414,64 @@ class EconomyPlugin(Plugin):
             )
         else:
             raise error
+        
+    @app_commands.command(name="rob", description="Steal an objekt from another user.")
+    @app_commands.describe(target="The user to rob.")
+    async def rob_command(self, interaction: discord.Interaction, target: discord.User):
+        user_id = str(interaction.user.id)
+        target_id = str(target.id)
+
+        if target_id == user_id:
+            await interaction.response.send_message("You can't rob yourself!")
+            return
+        
+        cooldown = await CooldownModel.filter(user_id=user_id, command="rob").first()
+        now = datetime.now(tz=timezone.utc)
+
+        if cooldown and cooldown.expires_at > now:
+            remaining = cooldown.expires_at - now
+            minutes, seconds = divmod(remaining.total_seconds(), 60)
+            hours, minutes = divmod(minutes, 60)
+            await interaction.response.send_message(
+                f"You are on cooldown! Try again in {int(hours)}h {int(minutes)}m {int(seconds)}s.",
+                ephemeral=True
+            )
+            return
+
+        target_inventory = await CollectionModel.filter(user_id=target_id).prefetch_related("objekt")
+
+        if not target_inventory:
+            await interaction.response.send_message(f"{target} has nothing to rob!")
+            return
+        
+        stolen_objekt = random.choice(target_inventory)
+
+        async with in_transaction():
+            if stolen_objekt.copies > 1:
+                stolen_objekt.copies -= 1
+                await stolen_objekt.save()
+            else:
+                await stolen_objekt.delete()
+
+            user_entry = await CollectionModel.filter(user_id=user_id, objekt_id=stolen_objekt.objekt.id).first()
+
+            if user_entry:
+                user_entry.copies += 1
+                await user_entry.save()
+            else:
+                await CollectionModel.create(user_id=user_id, objekt=stolen_objekt.objekt, copies=1)
+        
+        expires_at = now + timedelta(hours=6)
+        if cooldown:
+            cooldown.expires_at = expires_at
+            await cooldown.save()
+        else:
+            await CooldownModel.create(user_id=user_id, command="rob", expires_at=expires_at)
+
+        await interaction.response.send_message(
+            f"{target.mention}, you have been robbed!\n"
+            f"{interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0]}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
+        )
         
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))

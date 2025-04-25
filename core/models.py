@@ -4,7 +4,7 @@ import discord
 from tortoise.models import Model
 from tortoise import fields
 
-__all__ = ("AfkModel", "EconomyModel", "ObjektModel", "CollectionModel")
+__all__ = ("AfkModel", "EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel")
 
 class AfkModel(Model):
     id = fields.BigIntField(pk=True, unique=True)
@@ -55,3 +55,13 @@ class CollectionModel(Model):
     class Meta:
         table = "collections"
         unique_together = ("user_id", "objekt")
+
+class CooldownModel(Model):
+    id: int = fields.IntField(pk=True)
+    user_id: str = fields.TextField()
+    command: str = fields.TextField()
+    expires_at = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "cooldowns"
+        unique_together = ("user_id", "command")
