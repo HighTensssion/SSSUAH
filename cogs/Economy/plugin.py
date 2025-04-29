@@ -901,7 +901,7 @@ class EconomyPlugin(Plugin):
         else: 
             result_message = "😢 Better luck next time!"
         
-        await interaction.response.send_message(f"{slot_display}\\nn{result_message}")
+        await interaction.response.send_message(f"{slot_display}\n\n{result_message}")
 
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))
