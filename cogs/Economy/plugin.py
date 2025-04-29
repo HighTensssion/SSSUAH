@@ -103,7 +103,7 @@ class EconomyPlugin(Plugin):
             await CooldownModel.create(user_id=user_id, command="daily", expires_at=expires_at)
 
         embed = discord.Embed(
-            title="Weekly",
+            title="Daily Reward!",
             description=f"You received **{amount} como** and **{objekt.member} {objekt.season[0]}{objekt.series}**!",
             color=color
         )
