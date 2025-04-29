@@ -7,18 +7,29 @@ import random
 from PIL import Image
 from io import BytesIO
 import requests
-from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel
+from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel, ShopModel
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
 from tortoise.expressions import Q
-from tortoise.functions import Function as RandomFunction
+from tortoise.functions import Max
 from datetime import datetime, timedelta, tzinfo, timezone
 from .. import Plugin
 from discord import app_commands
+from discord.ext import tasks
+from discord.ui import View, Button
 
 class EconomyPlugin(Plugin):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+        self.refresh_shop_task.start()
+
+    @tasks.loop(hours=24)
+    async def refresh_shop_task(self):
+        await self.refresh_shop()
+    
+    @refresh_shop_task.before_loop
+    async def before_refresh_shop_task(self):
+        await self.bot.wait_until_ready()
 
     async def get_user_data(self, id: int) -> EconomyModel:
         try:
@@ -52,10 +63,37 @@ class EconomyPlugin(Plugin):
             )
             return
         
+        # give como
         data = await self.get_user_data(id=user_id)
         amount = random.randint(1, 100)
         data.balance += amount
         await data.save()
+
+        # give objekt
+        rarity = random.choice([1,2])
+        objekt_ids = await ObjektModel.filter(rarity=rarity).values_list("id", flat=True)
+
+        if not objekt_ids:
+            await interaction.response.send_message(f"You received **{amount}** como but no objekts of rarity {rarity} are available in the database.", ephemeral=True)
+            return
+    
+        random_objekt_id = random.choice(objekt_ids)
+        objekt = await ObjektModel.get(id=random_objekt_id)
+
+        objekt = await ObjektModel.get(id=random_objekt_id)
+        if objekt.background_color:
+            color = int(objekt.background_color.replace("#", ""), 16)
+        else:
+            color=0xFF69B4
+
+        async with in_transaction():
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id).first()
+
+            if collection_entry:
+                collection_entry.copies += 1
+                await collection_entry.save()
+            else:
+                await CollectionModel.create(user_id=str(user_id), objekt_id=objekt.id, copies=1)
 
         expires_at = now + timedelta(hours=24)
         if cooldown:
@@ -64,7 +102,88 @@ class EconomyPlugin(Plugin):
         else:
             await CooldownModel.create(user_id=user_id, command="daily", expires_at=expires_at)
 
-        await self.bot.success(f"You received **{amount} como.**", interaction)
+        embed = discord.Embed(
+            title="Weekly",
+            description=f"You received **{amount} como** and **{objekt.member} {objekt.season[0]}{objekt.series}**!",
+            color=color
+        )
+        if objekt.image_url:
+            embed.set_image(url=objekt.image_url)
+            
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="weekly", description="Claim 500 como and a rare objekt weekly.")
+    async def weekly_command(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+
+        cooldown = await CooldownModel.filter(user_id=user_id, command="weekly").first()
+        now = datetime.now(tz=timezone.utc)
+
+        if cooldown and cooldown.expires_at > now:
+            remaining = cooldown.expires_at - now
+            minutes, seconds = divmod(remaining.total_seconds(), 60)
+            hours, minutes = divmod(minutes, 60)
+            days, hours = divmod(hours, 24)
+            await interaction.response.send_message(
+                f"You are on cooldown! Try again in {int(days)}d {int(hours)}h {int(minutes)}m.",
+                ephemeral=True
+            )
+            return
+        
+        # give como
+        data = await self.get_user_data(id=user_id)
+        como_amount = 500
+        data.balance += como_amount
+        await data.save()
+
+        # give objekt
+        rarity_choices = [4, 5, 6]
+        rarity_weights = [0.6, 0.3, 0.1]
+        chosen_rarity = random.choices(rarity_choices, weights=rarity_weights, k=1)[0]
+
+        objekt_ids = await ObjektModel.filter(rarity=chosen_rarity).values_list("id", flat=True)
+
+        if not objekt_ids:
+            await interaction.response.send_message(
+                f"You received **{como_amount} como**, but no objekts of rarity {chosen_rarity} are available in the database.",
+                ephemeral=True
+            )
+            return
+        
+        random_objekt_id = random.choice(objekt_ids)
+        objekt = await ObjektModel.get(id=random_objekt_id)
+        if objekt.background_color:
+            color = int(objekt.background_color.replace("#", ""), 16)
+        else:
+            color=0xFF69B4
+
+        async with in_transaction():
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id).first()
+
+            if collection_entry:
+                collection_entry.copies += 1
+                await collection_entry.save()
+            else:
+                await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id, copies=1)
+
+            # cooldown set
+            expires_at = now + timedelta(days=7)
+            if cooldown:
+                cooldown.expires_at = expires_at
+                await cooldown.save()
+            else:
+                await CooldownModel.create(user_id=user_id, command="weekly", expires_at=expires_at)
+            
+            # response
+            embed = discord.Embed(
+                title="Weekly",
+                description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0]}{objekt.series}**!",
+                color=color
+            )
+            if objekt.image_url:
+                embed.set_image(url=objekt.image_url)
+            
+            await interaction.response.send_message(embed=embed)
 
     async def rarity_choice(self, rarity, weights):
         if not rarity:
@@ -73,7 +192,7 @@ class EconomyPlugin(Plugin):
 
     async def give_random_objekt(self, user_id: int, banner: str | None = None):
         rarity = [6,5,4,3,2,1]
-        weights = [0.001,0.0135,0.0355,0.1,0.25,0.6]
+        weights = [0.00555,0.03535,	0.05580,0.10370,0.19960,0.6]
         rarity_choice = await self.rarity_choice(rarity, weights)
         
         if banner == "rateup":
@@ -139,14 +258,39 @@ class EconomyPlugin(Plugin):
         card = await self.give_random_objekt(user_id, banner=banner_value)
 
         if card:
-            embed = discord.Embed(
-                title=f"You ({interaction.user}) received an objekt!",
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()
+            if card.background_color:
+                color = int(card.background_color.replace("#", ""), 16)
+            else:
                 color=0xFF69B4
+            
+            if collection_entry and collection_entry.copies > 1:
+                copies_message = f"You now have **{collection_entry.copies}** copies of this objekt!"
+            else:
+                copies_message = "Congrats on your *new* objekt!"
+
+            rarity_mapping = {
+                1: "n ",
+                2: "n ",
+                3: " Rare ",
+                4: " Very Rare ",
+                5: " Super Rare ",
+                6: "n Ultra Rare ",
+                7: "n "
+            }
+
+            rarity_str = rarity_mapping.get(card.rarity, "n ")
+
+
+            embed = discord.Embed(
+                title=f"You ({interaction.user}) received a{rarity_str}objekt!",
+                color=color
             )
             if card.image_url:
                 embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
                 embed.set_image(url=card.image_url)
-            #embed.set_footer(text=f"You pulled a new [objekt!]({card.image_url})")
+            
+            embed.set_footer(text=copies_message)
             await interaction.response.send_message(embed=embed)
         else:
             await interaction.response.send_message("No objekts found in the database.")
@@ -287,7 +431,7 @@ class EconomyPlugin(Plugin):
         objekts = await query
         
         if not objekts:
-            await interaction.send_message(
+            await interaction.response.send_message(
                 f"{prefix} inventory is empty!"
             )
             return
@@ -472,6 +616,220 @@ class EconomyPlugin(Plugin):
             f"{target.mention}, you have been robbed!\n"
             f"{interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0]}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
         )
+
+    @app_commands.command(name="send", description="Send an objekt to another user.")
+    @app_commands.describe(
+        recipient="The user to send the objekt to.",
+        objekt_slug="The slug of the objekt to send. ex: `ever01-nien-309`"
+    )
+    async def send_objekt_command(self, interaction:discord.Interaction, recipient: discord.User, objekt_slug: str):
+        sender_id = str(interaction.user.id)
+        recipient_id = str(recipient.id)
+        objekt_slug = objekt_slug.lower()
+
+        if sender_id == recipient_id:
+            await interaction.response.send_message("You can't send an objekt to yourself!", ephemeral=True)
+            return
         
+        objekt = await ObjektModel.filter(slug=objekt_slug).first()
+        if not objekt:
+            await interaction.response.send_message("Objekt not found!", ephemeral=True)
+            return
+
+        async with in_transaction():
+            sender_entry = await CollectionModel.filter(user_id=sender_id, objekt_id=objekt.id).first()
+
+            if not sender_entry or sender_entry.copies < 1:
+                await interaction.response.send_message("You don't have that objekt!", ephemeral=True)
+                return
+            
+            sender_entry.copies -= 1
+            if sender_entry.copies == 0:
+                await sender_entry.delete()
+            else:
+                await sender_entry.save()
+            
+            recipient_entry = await CollectionModel.filter(user_id=recipient_id, objekt_id=objekt.id).first()
+
+            if recipient_entry:
+                recipient_entry.copies += 1
+                await recipient_entry.save()
+            else:
+                await CollectionModel.create(user_id=recipient_id, objekt_id=objekt.id, copies=1)
+            
+        objekt = await ObjektModel.get(slug=objekt_slug)
+
+        if objekt:
+            if objekt.background_color:
+                color = int(objekt.background_color.replace("#", ""), 16)
+            else:
+                color=0xFF69B4
+
+            embed = discord.Embed(
+                title=f"{interaction.user} sends an objekt to {recipient}!",
+                description=f"[{objekt.member} {objekt.season[0]}{objekt.series}]({objekt.image_url})",
+                color=color
+            )
+            embed.set_image(url=objekt.image_url)
+
+            await interaction.response.send_message(embed=embed)
+
+            await interaction.followup.send(
+                f"{interaction.user.mention} successfully sent **{objekt.member} {objekt.season[0]}{objekt.series}** to {recipient.mention}!"
+            )
+        else:
+            await interaction.response.send_message("No objekts found in the database.")
+    
+    @app_commands.command(name="sell", description="Sell your objekt(s) for como.")
+    @app_commands.describe(
+        objekt_slug="The slug of the objekt to sell. ex: `gndsg00-honeydan-901`. Leave blank to bulk sell all duplicates.",
+        leave="The number of duplicates to leave in your inventory (only for bulk selling)."
+    )
+    async def sell_objekt_command(self, interaction: discord.Interaction, objekt_slug: str | None = None, leave: int = 1):
+        user_id = str(interaction.user.id)
+
+        rarity_values = {
+            1: 1,
+        }
+
+        if objekt_slug:
+            objekt = await ObjektModel.filter(slug=objekt_slug, rarity=1).first()
+            
+            if not objekt:
+                await interaction.response.send_message("Objekt not found!", ephemeral=True)
+                return
+            
+            collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=objekt.id).first()
+            if not collection_entry or collection_entry.copies <= 1:
+                await interaction.response.send_message("You don't have duplicates of this objekt to sell!", ephemeral=True)
+                return
+            
+            sale_value = rarity_values.get(objekt.rarity, 0)
+            
+            collection_entry.copies -= 1
+            if collection_entry.copies == 0:
+                await collection_entry.delete()
+            else:
+                await collection_entry.save()
+            
+            user_data = await self.get_user_data(id=interaction.user.id)
+            user_data.balance += sale_value
+            await user_data.save()
+
+            await interaction.response.send_message(
+                f"You sold **{objekt.member} {objekt.season[0]}{objekt.series}** for **{sale_value} como.**"
+            )
+        else:
+            collection_entries = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
+            total_sold = 0
+            total_value = 0
+
+            async with in_transaction():
+                for entry in collection_entries:
+                    if entry.objekt.rarity == 1 and entry.copies > leave:
+                        sell_count = entry.copies - leave
+                        sale_value = rarity_values.get(entry.objekt.rarity, 0) * sell_count
+                        total_sold += sell_count
+                        total_value += sale_value
+
+                        entry.copies = leave
+                        if entry.copies == 0:
+                            await entry.delete()
+                        else:
+                            await entry.save()
+                
+                user_data = await self.get_user_data(id=interaction.user.id)
+                user_data.balance += total_value
+                await user_data.save()
+            
+            await interaction.response.send_message(
+                f"You sold **{total_sold} objekts ** for **{total_value} como.**"
+            )
+        
+    async def refresh_shop(self):
+        last_refresh = await ShopModel.all().order_by("-created_at").first()
+        now = datetime.now(tz=timezone.utc)
+
+        if last_refresh and last_refresh.created_at:
+            time_since_refresh = now - last_refresh.created_at
+            if time_since_refresh < timedelta(hours=24):
+                return
+            
+        await ShopModel.all().delete()
+
+        buy_values = {
+            1: 5,
+            2: 15,
+            3: 35,
+            4: 75,
+            5: 200,
+            6: 1000,
+        }
+        rarity_tiers = [1, 2, 3, 4, 5, 6]
+
+        for rarity in rarity_tiers:
+            objekts = await ObjektModel.filter(rarity=rarity).all()
+
+            if objekts:
+                objekt = random.choice(objekts)
+                price = buy_values.get(objekt.rarity, 0)
+                await ShopModel.create(objekt=objekt, price=price)
+
+    def create_purchase_callback(self, shop_item, user):
+        async def callback(interaction:discord.Interaction):
+            if interaction.user != user:
+                await interaction.response.send_message("Open your own shop to purchase!", ephemeral=True)
+                return
+
+            user_data = await self.get_user_data(id=user.id)
+
+            if user_data.balance < shop_item.price:
+                await interaction.response.send_message("You don't have enough como!", ephemeral=True)
+                return
+            
+            user_data.balance -= shop_item.price
+            await user_data.save()
+
+            collection_entry = await CollectionModel.filter(user_id=str(user.id), objekt_id=shop_item.objekt.id).first()
+            if collection_entry:
+                collection_entry.copies += 1
+                await collection_entry.save()
+            else:
+                await CollectionModel.create(user_id=str(user.id), objekt_id=shop_item.objekt.id, copies=1)
+            
+            await interaction.response.send_message(
+                f"{user.mention} successfully purchased **[{shop_item.objekt.member} {shop_item.objekt.season[0]}{shop_item.objekt.series}]({shop_item.objekt.image_url})** for **{shop_item.price}** como!"
+            )
+        
+        return callback
+
+    @app_commands.command(name="shop", description="View the shop.")
+    async def shop_command(self, interaction: discord.Interaction):
+        shop_items = await ShopModel.all().prefetch_related("objekt")
+
+        if not shop_items:
+            await interaction.response.send_message("The shop is currently empty. Please wait for the next refresh!")
+            return
+        
+        embed = discord.Embed(title="Daily Shop", color=0x000000)
+        buttons = []
+        for index, item in enumerate(shop_items):
+            embed.add_field(
+                name=f"{item.objekt.member} {item.objekt.season[0]}{item.objekt.series}",
+                value=f"Rarity: {item.objekt.rarity}\nPrice: {item.price} como\n[View Objekt]({item.objekt.image_url})\n\n",
+                inline=True
+            )
+
+            button = Button(label=f"Buy obj. {index + 1}", style=discord.ButtonStyle.blurple)
+            button.callback = self.create_purchase_callback(item, interaction.user)
+            buttons.append(button)
+        
+        view = View()
+        for index, button in enumerate(buttons):
+            button.row = index // 3
+            view.add_item(button)
+        
+        await interaction.response.send_message(embed=embed, view=view)
+                
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))

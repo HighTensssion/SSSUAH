@@ -4,7 +4,7 @@ import discord
 from tortoise.models import Model
 from tortoise import fields
 
-__all__ = ("AfkModel", "EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel")
+__all__ = ("AfkModel", "EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel", "ShopModel")
 
 class AfkModel(Model):
     id = fields.BigIntField(pk=True, unique=True)
@@ -32,12 +32,14 @@ class EconomyModel(Model):
 
 class ObjektModel(Model):
     id: int = fields.IntField(pk=True)
+    slug: str = fields.TextField(null=True)
     objekt_name: str = fields.TextField()
-    member: str | None = fields.TextField(null=True)
     season: str | None = fields.TextField(null=True)
-    class_: str | None = fields.TextField(null=True, source_field="class")
+    member: str | None = fields.TextField(null=True)
     series: str | None = fields.TextField(null=True)
+    class_: str | None = fields.TextField(null=True, source_field="class")
     image_url: str | None = fields.TextField(null=True)
+    background_color: str | None = fields.TextField(null=True)
     rarity: int = fields.BigIntField(default=1)
 
     class Meta:
@@ -65,3 +67,13 @@ class CooldownModel(Model):
     class Meta:
         table = "cooldowns"
         unique_together = ("user_id", "command")
+
+class ShopModel(Model):
+    id: int = fields.IntField(pk=True)
+    objekt = fields.ForeignKeyField("models.ObjektModel", relate_name="shop_items", on_delete=fields.CASCADE)
+    price: int = fields.IntField()
+    created_at = fields.DatetimeField(auto_now_add=True)
+    last_refreshed = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "shop"
