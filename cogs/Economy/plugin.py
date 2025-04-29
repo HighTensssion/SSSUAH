@@ -830,6 +830,78 @@ class EconomyPlugin(Plugin):
             view.add_item(button)
         
         await interaction.response.send_message(embed=embed, view=view)
-                
+    
+    @app_commands.command(name="slots", description="Bet your como and spin the slot machine!")
+    @app_commands.describe(
+        bet="The amount of como to bet on the slot machine."
+    )
+    async def slots_command(self, interaction: discord.Interaction, bet: int):
+        user_id = interaction.user.id
+
+        # check valid bet
+        if bet <= 0:
+            await interaction.response.send_message("Your bet must be greater than 0!", ephemeral=True)
+            return
+        
+        user_data = await self.get_user_data(id=user_id)
+
+        # check bet vs balance
+        if user_data.balance < bet:
+            await interaction.response.send_message("you don't have enough como to place this bet!", ephemeral=True)
+            return
+        
+        user_data.balance -= bet
+        await user_data.save()
+
+        # slot machine definition
+        symbols = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
+        weights = [0.3, 0.25, 0.2, 0.15, 0.07, 0.03]
+
+        reel_1 = random.choices(symbols, weights)[0]
+        reel_2 = random.choices(symbols, weights)[0]
+        reel_3 = random.choices(symbols, weights)[0]
+
+        result = [reel_1, reel_2, reel_3]
+        payout = 0
+
+        payout_multipliers = {
+            "🍒": 2,  # Common symbol, lower payout
+            "🍋": 3,
+            "🍊": 5,
+            "🍇": 10,
+            "⭐": 20,
+            "💎": 50  # Rare symbol, higher payout
+        }
+
+        if result.count(reel_1) == 3:
+            payout = bet * payout_multipliers[reel_1]
+        elif result.count(reel_1) == 2 or result.count(reel_2) == 2:
+            payout = bet * 1.5
+        
+        user_data.balance += payout
+        await user_data.save()
+
+        # slots display
+        slot_display = f"🎰 **SLOTS** 🎰\n| {reel_1} | {reel_2} | {reel_3} |\n"
+
+        if payout / bet == 2:
+            result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
+        elif payout / bet == 3:
+            result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
+        elif payout / bet == 5:
+            result_message = f"🎉 Big win! {interaction.user.mention} won **{payout} como**! 🎉"
+        elif payout / bet == 10:
+            result_message = f"🎉 Huge win! {interaction.user.mention} won **{payout} como**! 🎉"
+        elif payout / bet == 20:
+            result_message = f"🎉 Tremendous win! {interaction.user.mention} won **{payout} como**! 🎉"
+        elif payout / bet == 50:
+            result_message = f"🎉 JACKPOT!!! {interaction.user.mention} won **{payout} como**!!! 🎉"
+        elif payout / bet == 1.5:
+            result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
+        else: 
+            result_message = "😢 Better luck next time!"
+        
+        await interaction.response.send_message(f"{slot_display}\\nn{result_message}")
+
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))
