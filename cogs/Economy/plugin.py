@@ -835,6 +835,7 @@ class EconomyPlugin(Plugin):
     @app_commands.describe(
         bet="The amount of como to bet on the slot machine."
     )
+    @app_commands.checks.cooldown(1, 10, key=lambda i: (i.user.id,))
     async def slots_command(self, interaction: discord.Interaction, bet: int):
         user_id = interaction.user.id
 
@@ -885,9 +886,9 @@ class EconomyPlugin(Plugin):
         slot_display = f"🎰 **SLOTS** 🎰\n| {reel_1} | {reel_2} | {reel_3} |\n"
 
         if payout / bet == 2:
-            result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉Win! {interaction.user.mention} won **{payout} como**! 🎉"
         elif payout / bet == 3:
-            result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉 Small win! {interaction.user.mention} won **{payout} como**! 🎉"
         elif payout / bet == 5:
             result_message = f"🎉 Big win! {interaction.user.mention} won **{payout} como**! 🎉"
         elif payout / bet == 10:
@@ -902,6 +903,19 @@ class EconomyPlugin(Plugin):
             result_message = "😢 Better luck next time!"
         
         await interaction.response.send_message(f"{slot_display}\n\n{result_message}")
+    
+    @slots_command.error
+    async def slots_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            remaining = int(error.retry_after)
+            minutes, seconds = divmod(remaining, 60)
+            time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+            await interaction.response.send_message(
+                f"Slots are on cooldown! Try again in **{time_str}**.",
+                ephemeral=True
+            )
+        else:
+            raise error
 
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))
