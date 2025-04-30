@@ -12,7 +12,7 @@ from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
 from tortoise.expressions import Q
 from tortoise.functions import Max
-from datetime import datetime, timedelta, tzinfo, timezone
+from datetime import datetime, timedelta, tzinfo, timezone, time
 from .. import Plugin
 from discord import app_commands
 from discord.ext import tasks
@@ -23,7 +23,7 @@ class EconomyPlugin(Plugin):
         self.bot = bot
         self.refresh_shop_task.start()
 
-    @tasks.loop(hours=24)
+    @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
     async def refresh_shop_task(self):
         await self.refresh_shop()
     
@@ -365,40 +365,6 @@ class EconomyPlugin(Plugin):
         if not card:
             await interaction.response.send_message("No objekts found in the database.")
             return
- 
-        # if pity_entry.chase_objekt_slug:
-        #     chase_objekt = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
-        #     if chase_objekt and chase_objekt.id == pity_entry.chase_objekt_slug:
-        #         card = chase_objekt
-        #         async with in_transaction():
-        #             collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=chase_objekt.id).first()
-        #             if collection_entry:
-        #                 collection_entry.copies += 1
-        #                 await collection_entry.save()
-        #             else:
-        #                 await CollectionModel.create(user_id=user_id, objekt_id=chase_objekt.id, copies=1)
-        #         pity_taken = pity_entry.chase_pity_count
-        #         pity_entry.chase_pity_count = 0
-        #         pity_entry.chase_objekt_slug = None
-        #         pity_entry.pity_count = 0 # also reset general pity
-        #         await pity_entry.save()
-
-        #         if card.background_color:
-        #             color = int(card.background_color.replace("#", ""), 16)
-        #         else:
-        #             color=0xFF69B4
-
-        #         embed = discord.Embed(
-        #             title=f"Congratulations, {interaction.user}, after {pity_taken} spins, your chase ended!",
-        #             color=color
-        #         )
-        #         if card.image_url:
-        #             embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
-        #             embed.set_image(url=card.image_url)
-        
-        #         embed.set_footer(text="Don't forget to set a new chase objekt with /set_chase!")
-        #         await interaction.response.send_message(embed=embed)
-        #         return
 
         if card.background_color:
             color = int(card.background_color.replace("#", ""), 16)
@@ -783,12 +749,24 @@ class EconomyPlugin(Plugin):
     @app_commands.command(name="send", description="Send an objekt to another user.")
     @app_commands.describe(
         recipient="The user to send the objekt to.",
-        objekt_slug="The slug of the objekt to send. ex: `ever01-nien-309`"
+        season="The season that the objekt you wish to send belongs to.",
+        member="The member whose objekt you wish to send. (Ex. Yooyeon, Nyangkidan)",
+        series="The series of the objekt you wish to send. (Ex. 000, 100, 309)"
     )
-    async def send_objekt_command(self, interaction:discord.Interaction, recipient: discord.User, objekt_slug: str):
+    @app_commands.choices(
+        season=[
+            app_commands.Choice(name="atom01", value="atom01"),
+            app_commands.Choice(name="binary01", value="binary01"),
+            app_commands.Choice(name="cream01", value="cream01"),
+            app_commands.Choice(name="divine01", value="divine01"),
+            app_commands.Choice(name="ever01", value="ever01"),
+            app_commands.Choice(name="customs", value="gndsg00")
+        ]
+    )
+    async def send_objekt_command(self, interaction:discord.Interaction, recipient: discord.User, season: str, member: str, series: int):
         sender_id = str(interaction.user.id)
         recipient_id = str(recipient.id)
-        objekt_slug = objekt_slug.lower()
+        objekt_slug = f"{season}-{member}-{series}".lower()
 
         if sender_id == recipient_id:
             await interaction.response.send_message("You can't send an objekt to yourself!", ephemeral=True)
@@ -910,15 +888,12 @@ class EconomyPlugin(Plugin):
             )
         
     async def refresh_shop(self):
-        last_refresh = await ShopModel.all().order_by("-created_at").first()
         now = datetime.now(tz=timezone.utc)
-
-        if last_refresh and last_refresh.created_at:
-            time_since_refresh = now - last_refresh.created_at
-            if time_since_refresh < timedelta(hours=24):
-                return
+        midnight = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
             
         await ShopModel.all().delete()
+
+        users = await EconomyModel.all()
 
         buy_values = {
             1: 5,
@@ -930,13 +905,18 @@ class EconomyPlugin(Plugin):
         }
         rarity_tiers = [1, 2, 3, 4, 5, 6]
 
-        for rarity in rarity_tiers:
-            objekts = await ObjektModel.filter(rarity=rarity).all()
+        for user in users:
+            user_id = user.id
+            items = []
+            for rarity in rarity_tiers:
+                objekts = await ObjektModel.filter(rarity=rarity).all()
 
-            if objekts:
-                objekt = random.choice(objekts)
-                price = buy_values.get(objekt.rarity, 0)
-                await ShopModel.create(objekt=objekt, price=price)
+                if objekts:
+                    objekt = random.choice(objekts)
+                    price = buy_values.get(objekt.rarity, 0)
+                    items.append(ShopModel(user_id=user_id, objekt=objekt, price=price))
+
+            await ShopModel.bulk_create(items)
 
     def create_purchase_callback(self, shop_item, user):
         async def callback(interaction:discord.Interaction):
@@ -968,13 +948,14 @@ class EconomyPlugin(Plugin):
 
     @app_commands.command(name="shop", description="View the shop.")
     async def shop_command(self, interaction: discord.Interaction):
-        shop_items = await ShopModel.all().prefetch_related("objekt")
+        user_id = interaction.user.id
+        shop_items = await ShopModel.filter(user_id=user_id).prefetch_related("objekt")
 
         if not shop_items:
-            await interaction.response.send_message("The shop is currently empty. Please wait for the next refresh!")
+            await interaction.response.send_message("Your shop is currently empty. Please wait for the next refresh!")
             return
         
-        embed = discord.Embed(title="Daily Shop", color=0x000000)
+        embed = discord.Embed(title=f"{interaction.user.name}'s Shop", color=0x000000)
         buttons = []
         for index, item in enumerate(shop_items):
             embed.add_field(
@@ -1080,5 +1061,47 @@ class EconomyPlugin(Plugin):
         else:
             raise error
 
+    @app_commands.command(name="refresh_shop", description="Force refresh shop if issues. Admin only.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def manual_refresh_shop_command(self, interaction:discord.Interaction):
+        await self.refresh_shop()
+        await interaction.response.send_message("Manual shop refresh complete.", ephemeral=True)
+
+    @app_commands.command(name="transfer", description="Transfer como to another user.")
+    @app_commands.describe(
+        recipient="The user to transfer como to.",
+        amount="The amount of como to transfer."
+    )
+    async def transfer_command(self, interaction: discord.Interaction, recipient: discord.User, amount: int):
+        sender_id = interaction.user.id
+        recipient_id = recipient.id
+
+        # prevent self transfers
+        if sender_id == recipient_id:
+            await interaction.response.send_message("You can't transfer como to yourself!", ephemeral=True)
+            return
+        
+        # prevent negative/zero transfers
+        if amount <= 0:
+            await interaction.response.send_message("You must send more than 0 como.", ephemeral=True)
+            return
+        
+        # get data
+        sender_data = await self.get_user_data(id=sender_id)
+        recipient_data = await self.get_user_data(id=recipient_id)
+
+        # check balance
+        if sender_data.balance < amount:
+            await interaction.response.send_message(f"{interaction.user.mention} doesn't have enough como to complete their send to {recipient.name}! Broke ahh")
+            return
+        
+        # transfer!
+        sender_data.balance -= amount
+        recipient_data.balance += amount
+        await sender_data.save()
+        await recipient_data.save()
+
+        # confirmation message
+        await interaction.response.send_message(f"# Transfer complete\n{interaction.user.mention} transferred **{amount}** como to {recipient.mention}!")
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))

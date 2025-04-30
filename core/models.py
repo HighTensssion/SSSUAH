@@ -70,10 +70,10 @@ class CooldownModel(Model):
 
 class ShopModel(Model):
     id: int = fields.IntField(pk=True)
+    user_id = fields.BigIntField()
     objekt = fields.ForeignKeyField("models.ObjektModel", relate_name="shop_items", on_delete=fields.CASCADE)
     price: int = fields.IntField()
     created_at = fields.DatetimeField(auto_now_add=True)
-    last_refreshed = fields.DatetimeField(null=True)
 
     class Meta:
         table = "shop"
