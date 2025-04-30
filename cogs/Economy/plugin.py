@@ -7,7 +7,7 @@ import random
 from PIL import Image
 from io import BytesIO
 import requests
-from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel, ShopModel
+from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel, ShopModel, PityModel
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
 from tortoise.expressions import Q
@@ -192,7 +192,7 @@ class EconomyPlugin(Plugin):
 
     async def give_random_objekt(self, user_id: int, banner: str | None = None):
         rarity = [6,5,4,3,2,1]
-        weights = [0.00555,0.03535,	0.05580,0.10370,0.19960,0.6]
+        weights = [0.003,0.03,0.067,0.1,0.2,0.6]
         rarity_choice = await self.rarity_choice(rarity, weights)
         
         if banner == "rateup":
@@ -255,45 +255,80 @@ class EconomyPlugin(Plugin):
     async def spin_command(self, interaction: discord.Interaction, banner: app_commands.Choice[str] | None = None):
         user_id = interaction.user.id
         banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
+        
+        # define rarities
+        low_rarities = [1, 2]
+        pity_threshold = 80
+
+        # user's pity counter
+        pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
+
+        # roll
         card = await self.give_random_objekt(user_id, banner=banner_value)
 
-        if card:
-            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()
-            if card.background_color:
-                color = int(card.background_color.replace("#", ""), 16)
-            else:
-                color=0xFF69B4
-            
-            if collection_entry and collection_entry.copies > 1:
-                copies_message = f"You now have **{collection_entry.copies}** copies of this objekt!"
-            else:
-                copies_message = "Congrats on your *new* objekt!"
-
-            rarity_mapping = {
-                1: "n ",
-                2: "n ",
-                3: " Rare ",
-                4: " Very Rare ",
-                5: " Super Rare ",
-                6: "n Ultra Rare ",
-                7: "n "
-            }
-
-            rarity_str = rarity_mapping.get(card.rarity, "n ")
-
-
-            embed = discord.Embed(
-                title=f"You ({interaction.user}) received a{rarity_str}objekt!",
-                color=color
-            )
-            if card.image_url:
-                embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
-                embed.set_image(url=card.image_url)
-            
-            embed.set_footer(text=copies_message)
-            await interaction.response.send_message(embed=embed)
-        else:
+        if not card:
             await interaction.response.send_message("No objekts found in the database.")
+            return
+        
+        if card. rarity in low_rarities:
+            pity_entry.pity_count += 1
+        else:
+            pity_entry.pity_count = 0
+
+        if pity_entry.pity_count >= pity_threshold:
+            pity_entry.pity_count = 0
+
+            owned_ids = await CollectionModel.filter(user_id=user_id).values_list("objekt_id", flat=True)
+            higher_rarity_cards = await ObjektModel.filter(rarity__gte=3).exclude(id__in=owned_ids).values_list("id", flat=True)
+
+            if higher_rarity_cards:
+                pity_card_id = random.choice(higher_rarity_cards)
+                card = await ObjektModel.get(id=pity_card_id)
+
+                async with in_transaction():
+                    collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=card.id).first()
+                    if collection_entry:
+                        collection_entry.copies += 1
+                        await collection_entry.save()
+                    else:
+                        await CollectionModel.create(user_id=user_id, objekt_id=card.id, copies=1)
+            
+        await pity_entry.save()
+
+        collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()
+        if card.background_color:
+            color = int(card.background_color.replace("#", ""), 16)
+        else:
+            color=0xFF69B4
+        
+        if collection_entry and collection_entry.copies > 1:
+            copies_message = f"You now have {collection_entry.copies} copies of this objekt!"
+        else:
+            copies_message = "Congrats on your new objekt!"
+
+        rarity_mapping = {
+            1: "n ",
+            2: "n ",
+            3: " Rare ",
+            4: " Very Rare ",
+            5: " Super Rare ",
+            6: "n Ultra Rare ",
+            7: "n "
+        }
+
+        rarity_str = rarity_mapping.get(card.rarity, "n ")
+
+
+        embed = discord.Embed(
+            title=f"You ({interaction.user}) received a{rarity_str}objekt!",
+            color=color
+        )
+        if card.image_url:
+            embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
+            embed.set_image(url=card.image_url)
+        
+        embed.set_footer(text=copies_message)
+        await interaction.response.send_message(embed=embed)
     
     @spin_command.error
     async def spin_error(self, interaction: discord.Interaction, error):
@@ -344,7 +379,7 @@ class EconomyPlugin(Plugin):
     @app_commands.command(name="inv", description="View your inventory or another user's inventory.")
     @app_commands.describe(
         user="The user whose inventory will be displayed. (Leave blank for your own)",
-        sort_by="Sort the inventory by member, season, class, series, or amount owned. (Leave blank to sort inventory by date added)",
+        sort_by="Sort the inventory by member, season, class, series, amount owned, or rarity. (Leave blank to sort inventory by date added)",
         filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
         filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
         filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
@@ -356,7 +391,8 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="season", value="season"),
             app_commands.Choice(name="class", value="class"),
             app_commands.Choice(name="series", value="series"),
-            app_commands.Choice(name="copies", value="copies")
+            app_commands.Choice(name="copies", value="copies"),
+            app_commands.Choice(name="rarity", value="rarity")
         ],
         filter_by_member=[
             app_commands.Choice(name="Chaewon", value="ChaeWon"),
@@ -389,7 +425,8 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="binary", value="Binary01"),
             app_commands.Choice(name="cream", value="Cream01"),
             app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01")
+            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.Choice(name="customs", value="GNDSG00")
         ],
         filter_by_class=[
             app_commands.Choice(name="zero", value="Zero"),
@@ -397,7 +434,7 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="first", value="First"),
             app_commands.Choice(name="special", value="Special"),
             app_commands.Choice(name="double", value="Double"),
-            app_commands.Choice(name="never", value="Never"),
+            app_commands.Choice(name="customs", value="Never"),
             app_commands.Choice(name="premier", value="Premier")
         ]
     )
@@ -459,8 +496,11 @@ class EconomyPlugin(Plugin):
                     objekt_data.sort(key=lambda x: x[2].lower())
                 elif sort_by == "class" or sort_by == "series":
                     objekt_data.sort(key=lambda x: x[4].lower())
+                elif sort_by == "rarity":
+                    objekt_data.sort(key=lambda x: x[6])
                 elif sort_by == "copies":
                     objekt_data.sort(key=lambda x: x[7])
+                
             else:
                 if sort_by  == "member":
                     objekt_data.sort(key=lambda x: x[1].lower(), reverse=True)
@@ -468,6 +508,8 @@ class EconomyPlugin(Plugin):
                     objekt_data.sort(key=lambda x: x[2].lower(), reverse=True)
                 elif sort_by == "class" or sort_by == "series":
                     objekt_data.sort(key=lambda x: x[4].lower(), reverse=True)
+                elif sort_by == "rarity":
+                    objekt_data.sort(key=lambda x: x[6], reverse=True)
                 elif sort_by == "copies":
                     objekt_data.sort(key=lambda x: x[7], reverse=True)
         

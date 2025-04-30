@@ -4,7 +4,7 @@ import discord
 from tortoise.models import Model
 from tortoise import fields
 
-__all__ = ("AfkModel", "EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel", "ShopModel")
+__all__ = ("AfkModel", "EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel", "ShopModel", "PityModel")
 
 class AfkModel(Model):
     id = fields.BigIntField(pk=True, unique=True)
@@ -77,3 +77,11 @@ class ShopModel(Model):
 
     class Meta:
         table = "shop"
+    
+class PityModel(Model):
+    user_id = fields.CharField(max_length=50, unique=True)
+    pity_count = fields.IntField(default=0)
+    last_reset = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "pity"
