@@ -239,6 +239,29 @@ class EconomyPlugin(Plugin):
 
         return card
     
+    @app_commands.command(name="set_chase", description="Set a chase objekt, which you will be guaranteed to receive within 250 spins.")
+    @app_commands.describe(objekt_slug="The slug of the objekt you want to chase.")
+    async def set_chase_command(self, interaction: discord.Interaction, objekt_slug: str)
+        user_id = str(interaction.user.id)
+
+        # validate slug
+        objekt = await ObjektModel.filter(slug=objekt_slug).first()
+        if not objekt:
+            await interaction.response.send_message("The specified objekt slug does not exist!", ephemeral=True)
+            return
+        
+        # get or create the user's pity entry
+        pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
+
+        # update chase objekt
+        pity_entry.chase_objekt_slug = objekt_slug
+        pity_entry.chase_pity_count = 0
+        await pity_entry.save()
+
+        await interaction.response.send_message(
+            f"Your chase objekt has been set to **{objekt.member} {objekt.season[0]}{objekt.series}**!"
+        )
+    
     @app_commands.command(name="spin", description="Collect a random objekt!")
     @app_commands.describe(banner="Select a banner to spin from (leave blank to spin all seasons).")
     @app_commands.choices(
@@ -255,13 +278,42 @@ class EconomyPlugin(Plugin):
     async def spin_command(self, interaction: discord.Interaction, banner: app_commands.Choice[str] | None = None):
         user_id = interaction.user.id
         banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
-        
-        # define rarities
-        low_rarities = [1, 2]
-        pity_threshold = 80
 
         # user's pity counter
         pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
+
+        # increment chase pity
+        if pity_entry.chase_objekt_slug:
+            pity_entry.chase_pity_count +=1
+
+        # check chase pity
+        if pity_entry.chase_objekt_slug and pity_entry.chase_pity_count >= 250:
+            chase_objekt = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
+            if chase_objekt:
+                async with in_transaction():
+                    collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=chase_objekt.id).first()
+                    if collection_entry:
+                        collection_entry.copies += 1
+                        await collection_entry.save()
+                    else:
+                        await CollectionModel.filter(user_id=user_id, objekt_id=chase_objekt.id, copies=1)
+                    
+                # reset chase pity and prompt user to set a new chase
+                pity_entry.chase_pity_count = 0
+                pity_entry.chase_objekt_slug = None
+                await pity_entry.save()
+
+                embed = discord.Embed(
+                    title=f"Congratulations, {interaction.user}, chase ended!",
+                    color=color
+                )
+                if card.image_url:
+                    embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
+                    embed.set_image(url=card.image_url)
+        
+                embed.set_footer(text="Don't forget to set a new chase objekt with /set_chase!")
+                await interaction.response.send_message(embed=embed)
+                return
 
         # roll
         card = await self.give_random_objekt(user_id, banner=banner_value)
@@ -270,6 +322,9 @@ class EconomyPlugin(Plugin):
             await interaction.response.send_message("No objekts found in the database.")
             return
         
+        # define rarities
+        low_rarities = [1, 2, 3]
+        pity_threshold = 80
         if card. rarity in low_rarities:
             pity_entry.pity_count += 1
         else:
@@ -279,7 +334,7 @@ class EconomyPlugin(Plugin):
             pity_entry.pity_count = 0
 
             owned_ids = await CollectionModel.filter(user_id=user_id).values_list("objekt_id", flat=True)
-            higher_rarity_cards = await ObjektModel.filter(rarity__gte=3).exclude(id__in=owned_ids).values_list("id", flat=True)
+            higher_rarity_cards = await ObjektModel.filter(rarity__gte=4).exclude(id__in=owned_ids).values_list("id", flat=True)
 
             if higher_rarity_cards:
                 pity_card_id = random.choice(higher_rarity_cards)

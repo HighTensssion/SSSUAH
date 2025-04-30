@@ -81,6 +81,8 @@ class ShopModel(Model):
 class PityModel(Model):
     user_id = fields.CharField(max_length=50, unique=True)
     pity_count = fields.IntField(default=0)
+    chase_objekt_slug = fields.CharField(max_length=100, null=True)
+    chase_pity_count = fields.IntField(default=0)
     last_reset = fields.DatetimeField(auto_now=True)
 
     class Meta:
