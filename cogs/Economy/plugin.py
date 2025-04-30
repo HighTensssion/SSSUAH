@@ -317,9 +317,22 @@ class EconomyPlugin(Plugin):
         return card, None
     
     @app_commands.command(name="set_chase", description="Set a chase objekt, which you will be guaranteed to receive within 250 spins.")
-    @app_commands.describe(objekt_slug="The slug of the objekt you want to chase.")
-    async def set_chase_command(self, interaction: discord.Interaction, objekt_slug: str):
+    @app_commands.describe(season="The season which your chase objekt is in.",
+                           member="The member whose objekt you wish to chase. (Ex. Nien, Honeydan)",
+                           series="The series of your desired chase objekt. (Ex. 000, 309, 901)")
+    @app_commands.choices(
+        season=[
+            app_commands.Choice(name="atom01", value="atom01"),
+            app_commands.Choice(name="binary01", value="binary01"),
+            app_commands.Choice(name="cream01", value="cream01"),
+            app_commands.Choice(name="divine01", value="divine01"),
+            app_commands.Choice(name="ever01", value="ever01"),
+            app_commands.Choice(name="customs", value="gndsg00")
+        ]
+    )
+    async def set_chase_command(self, interaction: discord.Interaction, season: str, member: str, series: int):
         user_id = str(interaction.user.id)
+        objekt_slug = f"{season}-{member}-{series}".lower()
 
         # validate slug
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
