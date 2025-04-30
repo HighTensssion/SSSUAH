@@ -834,71 +834,87 @@ class EconomyPlugin(Plugin):
         else:
             await interaction.response.send_message("No objekts found in the database.")
     
-    @app_commands.command(name="sell", description="Sell your objekt(s) for como.")
-    @app_commands.describe(
-        objekt_slug="The slug of the objekt to sell. ex: `gndsg00-honeydan-901`. Leave blank to bulk sell all duplicates.",
-        leave="The number of duplicates to leave in your inventory (only for bulk selling)."
-    )
-    async def sell_objekt_command(self, interaction: discord.Interaction, objekt_slug: str | None = None, leave: int = 1):
-        user_id = str(interaction.user.id)
-
-        rarity_values = {
-            1: 1,
-        }
-
-        if objekt_slug:
-            objekt = await ObjektModel.filter(slug=objekt_slug, rarity=1).first()
-            
-            if not objekt:
-                await interaction.response.send_message("Objekt not found!", ephemeral=True)
+    def create_sell_callback(self, user_id: str, rarity: int, leave: int):
+        async def callback(interaction: discord.Interaction):
+            # inventory
+            collection_entries = await CollectionModel.filter(user_id=user_id, objekt__rarity=rarity).prefetch_related("objekt")
+            if not collection_entries:
+                await interaction.response.send_message(f"You have no extra objekts of rarity {rarity} to sell!", ephemeral=True)
                 return
             
-            collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=objekt.id).first()
-            if not collection_entry or collection_entry.copies <= 1:
-                await interaction.response.send_message("You don't have duplicates of this objekt to sell!", ephemeral=True)
-                return
-            
-            sale_value = rarity_values.get(objekt.rarity, 0)
-            
-            collection_entry.copies -= 1
-            if collection_entry.copies == 0:
-                await collection_entry.delete()
-            else:
-                await collection_entry.save()
-            
-            user_data = await self.get_user_data(id=interaction.user.id)
-            user_data.balance += sale_value
-            await user_data.save()
-
-            await interaction.response.send_message(
-                f"You sold **{objekt.member} {objekt.season[0]}{objekt.series}** for **{sale_value} como.**"
-            )
-        else:
-            collection_entries = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
             total_sold = 0
             total_value = 0
+            rarity_values = {
+                1: 2,
+                2: 10,
+                3: 30,
+                4: 70,
+                5: 150,
+                6: 400,
+                7: 10,
+            }
 
             async with in_transaction():
                 for entry in collection_entries:
-                    if entry.objekt.rarity == 1 and entry.copies > leave:
+                    if entry.copies > leave:
                         sell_count = entry.copies - leave
-                        sale_value = rarity_values.get(entry.objekt.rarity, 0) * sell_count
+                        sale_value = rarity_values.get(rarity, 0) * sell_count
                         total_sold += sell_count
                         total_value += sale_value
 
                         entry.copies = leave
                         if entry.copies == 0:
                             await entry.delete()
-                        else:
+                        else: 
                             await entry.save()
-                
-                user_data = await self.get_user_data(id=interaction.user.id)
+
+                user_data = await self.get_user_data(id=int(user_id))
                 user_data.balance += total_value
                 await user_data.save()
             
             await interaction.response.send_message(
-                f"You sold **{total_sold} objekts ** for **{total_value} como.**"
+                f"{interaction.user.name} sold **{total_sold} objekts** of rarity {rarity} for **{total_value}** como."
             )
+        
+        return callback
+
+    @app_commands.command(name="sell", description="Sell your duplicate objekts for como. (Do not sell rarity 7 dupes, as they may go up in value)")
+    @app_commands.describe(
+        leave="The number of duplicates to leave in your inventory (only for bulk selling)."
+    )
+    async def sell_objekt_command(self, interaction: discord.Interaction, leave: int = 1):
+        user_id = str(interaction.user.id)
+
+        # fetch inventory
+        collection_entries = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
+        rarity_summary = {}
+        for entry in collection_entries:
+            rarity = entry.objekt.rarity
+            if rarity not in rarity_summary:
+                rarity_summary[rarity] = {"unique": 0, "dupes": 0}
+            rarity_summary[rarity]["unique"] += 1
+            if entry.copies > leave:
+                rarity_summary[rarity]["dupes"] += entry.copies - leave
+        
+        embed = discord.Embed(
+            title=f"{interaction.user.name}'s Inventory Overview",
+            description="Here is an overview of your inventory by rarity tier:",
+            color=0xFFFFFF
+        )
+        for rarity, counts in sorted(rarity_summary.items()):
+            embed.add_field(
+                name=f"Rarity {rarity}",
+                value=f"Unique: {counts['unique']} | Dupes above sell limit: {counts['dupes']}",
+                inline=False
+            )
+        
+        view = View()
+        for rarity in sorted(rarity_summary.keys()):
+            button = Button(label=f"Sell Rarity {rarity}", style=discord.ButtonStyle.blurple)
+            button.callback = self.create_sell_callback(user_id, rarity, leave)
+            view.add_item(button)
+        
+        await interaction.response.send_message(embed=embed, view=view)
         
     async def refresh_shop(self):
         now = datetime.now(tz=timezone.utc)
