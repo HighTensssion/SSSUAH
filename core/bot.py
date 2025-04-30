@@ -13,6 +13,18 @@ log = getLogger("Bot")
 
 __all__ = ("Bot",)
 
+@commands.command(name="sync")
+@commands.is_owner()
+async def sync(ctx):
+    await ctx.bot.tree.sync()
+    await ctx.send("Commands synced!")
+
+@commands.command(name="reload")
+@commands.is_owner()
+async def reload(ctx, extension):
+    await ctx.bot.unload_extension(f'cogs.{extension}.plugin')
+    await ctx.bot.load_extension(f'cogs.{extension}.plugin')
+    await ctx.send(f'Reloaded {extension}.plugin')
 
 class Bot(commands.AutoShardedBot):
     def __init__(self):
@@ -21,7 +33,7 @@ class Bot(commands.AutoShardedBot):
             intents=discord.Intents.all(),
             chunk_guild_at_startup=False
         )
-
+    
     async def setup_hook(self) -> None:
         await Tortoise.init(
             db_url=f"postgres://{os.getenv("user")}:{os.getenv("password")}@{os.getenv("host")}:{os.getenv("port")}/{os.getenv("dbname")}",
@@ -36,6 +48,9 @@ class Bot(commands.AutoShardedBot):
 
         synced_commands = await self.tree.sync()
         log.info(f"Successfully synced {len(synced_commands)} commands.")
+
+        self.add_command(sync)
+        self.add_command(reload)
 
     async def on_ready(self) -> None:
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
