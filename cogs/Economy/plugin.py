@@ -416,6 +416,21 @@ class EconomyPlugin(Plugin):
         if not card:
             await interaction.response.send_message("No objekts found in the database.")
             return
+        
+        rarity_to_como = {
+                1: 1,
+                2: 5,
+                3: 15,
+                4: 35,
+                5: 75,
+                6: 200,
+                7: 5,
+        }
+
+        como_reward = rarity_to_como.get(card.rarity, 0)
+        user_data = await self.get_user_data(id=user_id)
+        user_data.balance += como_reward
+        await user_data.save()
 
         if card.background_color:
             color = int(card.background_color.replace("#", ""), 16)
@@ -450,8 +465,11 @@ class EconomyPlugin(Plugin):
             if card.image_url:
                 embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
                 embed.set_image(url=card.image_url)
-        
-            embed.set_footer(text="Don't forget to set a new chase objekt with /set_chase!")
+            footer_text = (
+                f"Don't forget to set a new chase objekt with /set_chase!\n"
+                f"You earned **{como_reward} como** from this spin!"
+            )
+            embed.set_footer(text="{footer_text}")
         else:
             embed = discord.Embed(
                 title=f"You ({interaction.user}) received a{rarity_str}objekt!",
@@ -464,6 +482,11 @@ class EconomyPlugin(Plugin):
             general_pity = pity_entry.pity_count if pity_entry else 0
             chase_pity = pity_entry.chase_pity_count if pity_entry else 0
             footer_text = f"{copies_message}\nGeneral Pity: {general_pity} | Chase Pity: {chase_pity}/250"
+            footer_text = (
+                f"{copies_message}\n"
+                f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
+                f"You earned **{como_reward} como** from this spin!"
+            )
             embed.set_footer(text=footer_text)
             
         await interaction.response.send_message(embed=embed)
