@@ -344,6 +344,40 @@ class EconomyPlugin(Plugin):
         # get or create the user's pity entry
         pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
 
+        # check if chase already set
+        if pity_entry.chase_objekt_slug:
+            current_chase = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
+            current_chase_name = f"{current_chase.member} {current_chase.season[0]}{current_chase.series}" if current_chase else "Unknown"
+
+            # confirm chase change
+            class ConfirmChaseChangeView(View):
+                def __init__(self):
+                    super().__init__()
+                    self.value = None
+                
+                @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
+                async def confirm(self, interaction: discord.Interaction, button: Button):
+                    self.value = True
+                    self.stop()
+                
+                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+                async def cancel(self, interaction: discord.Interaction, button: Button):
+                    self.value = False
+                    self.stop()
+            
+            view = ConfirmChaseChangeView()
+            await interaction.response.send_message(
+                f"You already are chasing **{current_chase_name}**! "
+                f"Changing your chase objekt will reset your pity. Do you wish to proceed?",
+                view=view,
+                ephemeral=True
+            )
+            await view.wait()
+
+            if view.value is None or not view.value:
+                await interaction.followup.send("Chase objekt change canceled.", ephemeral=True)
+                return
+        
         # update chase objekt
         pity_entry.chase_objekt_slug = objekt_slug
         pity_entry.chase_pity_count = 0
