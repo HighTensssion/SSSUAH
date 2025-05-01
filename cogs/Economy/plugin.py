@@ -21,7 +21,8 @@ from discord.ui import View, Button
 class EconomyPlugin(Plugin):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
-        self.refresh_shop_task.start()
+        if not self.refresh_shop_task.is_running():
+            self.refresh_shop_task.start()
 
     @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
     async def refresh_shop_task(self):
@@ -937,7 +938,8 @@ class EconomyPlugin(Plugin):
         for user in users:
             user_id = user.id
             items = []
-            for rarity in rarity_tiers:
+            for _ in range(6):
+                rarity = random.choice(rarity_tiers)
                 objekts = await ObjektModel.filter(rarity=rarity).all()
 
                 if objekts:
@@ -1132,5 +1134,102 @@ class EconomyPlugin(Plugin):
 
         # confirmation message
         await interaction.response.send_message(f"# Transfer complete\n{interaction.user.mention} transferred **{amount}** como to {recipient.mention}!")
+
+    @app_commands.command(name="compare", description="Compare two users' inventories.")
+    @app_commands.describe(
+        user1="The first user to compare. (deafulats to command caller)",
+        user2="The second user to compare."
+    )
+    async def compare_inventories_command(self, interaction: discord.Interaction, user2: discord.User, user1: discord.User | None = None):
+        if user1:
+            user1_id = str(user1.id)
+            user2_id = str(user2.id)
+        else:
+            user1 = interaction.user
+            user1_id = str(user1.id)
+            user2_id = str(user2.id)
+        
+        # fetch inventory
+        user1_inventory = await CollectionModel.filter(user_id=user1_id).prefetch_related("objekt")
+        user2_inventory = await CollectionModel.filter(user_id=user2_id).prefetch_related("objekt")
+
+        # extract slugs to compare
+        user1_objekts = {entry.objekt.slug for entry in user1_inventory}
+        user2_objekts = {entry.objekt.slug for entry in user2_inventory}
+
+        # differentials
+        user1_only = user1_objekts - user2_objekts
+        user2_only = user2_objekts - user1_objekts
+
+        # fetch objekt details
+        user1_only_details = await ObjektModel.filter(slug__in=user1_only).all()
+        user2_only_details = await ObjektModel.filter(slug__in=user2_only).all()
+
+        user1_field_data = [
+            f"[{obj.member} {obj.season[0]}{obj.series}]({obj.image_url})" for obj in user1_only_details
+        ]
+        user2_field_data = [
+            f"[{obj.member} {obj.season[0]}{obj.series}]({obj.image_url})" for obj in user2_only_details
+        ]
+
+        # preparing pagination
+        items_per_page = 9
+        total_pages = max(
+            (len(user1_field_data) + items_per_page - 1) // items_per_page,
+            (len(user2_field_data) + items_per_page - 1) // items_per_page,
+        )
+        current_page = 0
+
+        def get_page_embed(page):
+            start = page * items_per_page
+            end = start + items_per_page
+
+            user1_page_data = user1_field_data[start:end]
+            user2_page_data = user2_field_data[start:end]
+
+            user1_field = "\n".join(user1_page_data)[:1024] or "None"
+            user2_field = "\n".join(user2_page_data)[:1024] or "None"
+
+            embed = discord.Embed(
+                title="Inventory Comparison",
+                description=f"Comparison between {user1.name} and {user2.name}",
+                color=0x0000FF
+            )
+            embed.add_field(name=f"Objekts {user1.name} has but {user2.name} doesn't:", value=user1_field, inline=True)
+            embed.add_field(name=f"Objekts {user2.name} has but {user1.name} doesn't:", value=user2_field, inline=True)
+            embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+            return embed
+        
+        class PaginationView(View):
+            def __init__(self):
+                super().__init__()
+                self.current_page = 0
+
+            async def update_embed(self, interaction: discord.Interaction):
+                embed = get_page_embed(self.current_page)
+                await interaction.response.edit_message(embed=embed, view=self)
+            
+            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page > 0:
+                    self.current_page -= 1
+                elif self.current_page == 0:
+                    self.current_page = total_pages - 1
+                await self.update_embed(interaction)
+                
+            
+            @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page < total_pages - 1:
+                    self.current_page += 1
+                elif self.current_page == total_pages - 1:
+                    self.current_page = 0
+                await self.update_embed(interaction)
+        
+        # send the initial embed within the View
+        embed = get_page_embed(current_page)
+        view = PaginationView()
+        await interaction.response.send_message(embed=embed, view=view)
+
 async def setup(bot: Bot):
     await bot.add_cog(EconomyPlugin(bot))
