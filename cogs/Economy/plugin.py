@@ -358,11 +358,13 @@ class EconomyPlugin(Plugin):
                 @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
                 async def confirm(self, interaction: discord.Interaction, button: Button):
                     self.value = True
+                    await interaction.response.defer()
                     self.stop()
                 
                 @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
                 async def cancel(self, interaction: discord.Interaction, button: Button):
                     self.value = False
+                    await interaction.response.defer()
                     self.stop()
             
             view = ConfirmChaseChangeView()
