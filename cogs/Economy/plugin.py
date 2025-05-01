@@ -6,6 +6,7 @@ import discord
 import random
 from PIL import Image
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
 import requests
 from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel, ShopModel, PityModel
 from tortoise.exceptions import DoesNotExist
@@ -482,28 +483,199 @@ class EconomyPlugin(Plugin):
         else:
             raise error
 
-    def create_collage(self, image_urls, filename='collage.png', thumb_size=(200, 200), images_per_row=3):
-        images = []
-        for url in image_urls:
+    @app_commands.command(name="inv_text", description="View your or another user's inventory in text-only format. Dynamic sort available.")
+    @app_commands.describe(user="The user whose inventory will be displayed. (Leave blank to view your own)",
+                           filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
+                           filter_by_season="Filter the inventory by season.. (Leave blank for no filter)",
+                           filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
+                           ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)")
+    @app_commands.choices(
+        filter_by_season=[
+            app_commands.Choice(name="atom", value="Atom01"),
+            app_commands.Choice(name="binary", value="Binary01"),
+            app_commands.Choice(name="cream", value="Cream01"),
+            app_commands.Choice(name="divine", value="Divine01"),
+            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.Choice(name="customs", value="GNDSG00")
+        ],
+        filter_by_class=[
+            app_commands.Choice(name="zero", value="Zero"),
+            app_commands.Choice(name="welcome", value="Welcome"),
+            app_commands.Choice(name="first", value="First"),
+            app_commands.Choice(name="special", value="Special"),
+            app_commands.Choice(name="double", value="Double"),
+            app_commands.Choice(name="customs", value="Never"),
+            app_commands.Choice(name="premier", value="Premier")
+        ]
+    )
+    async def inv_text_command(self, interaction: discord.Interaction, user: discord.User | None = None, filter_by_member: str | None = None, filter_by_season: str | None = None, filter_by_class: str | None = None, ascending: bool | None = False):
+        target = user or interaction.user
+        user_id = str(target.id)
+        prefix = f"Your ({target})" if not user else f"{user}'s"
+
+        await interaction.response.defer()
+
+        query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
+
+        if filter_by_member:
+            query = query.filter(objekt__member=filter_by_member.lower())
+        if filter_by_season:
+            query = query.filter(objekt__season=filter_by_season)
+        if filter_by_class:
+            query = query.filter(objekt__class_=filter_by_class)
+        
+        objekts = await query
+
+        if not objekts:
+            await interaction.followup.send(f"{prefix} inventory is empty!")
+            return
+        
+        objekt_data = [
+            (
+                objekt.objekt.id,
+                objekt.objekt.member,
+                objekt.objekt.season,
+                objekt.objekt.class_,
+                objekt.objekt.series,
+                objekt.objekt.image_url,
+                objekt.objekt.rarity,
+                objekt.copies
+            )
+            for objekt in objekts
+        ]
+
+        items_per_page = 9
+        total_pages = (len(objekt_data) + items_per_page - 1) // items_per_page
+        current_page = 0
+        current_sort = "date"
+
+        def sort_inventory(data, sort_by, ascending):
+            if sort_by  == "member":
+                return sorted(data, key=lambda x: x[1].lower(), reverse=not ascending)
+            elif sort_by == "season":
+                return sorted(data, key=lambda x: x[2].lower(), reverse=not ascending)
+            elif sort_by == "class":
+                return sorted(data, key=lambda x: x[3].lower(), reverse=not ascending)
+            elif sort_by == "series":
+                return sorted(data, key=lambda x: x[4].lower(), reverse=not ascending)
+            elif sort_by == "rarity":
+                return sorted(data, key=lambda x: x[6], reverse=not ascending)
+            elif sort_by == "copies":
+                return sorted(data, key=lambda x: x[7], reverse=not ascending)
+            else:
+                return data
+        
+        def get_page_embed(page, sort_by, ascending):
+            sorted_data = sort_inventory(objekt_data, sort_by, ascending)
+            start = page* items_per_page
+            end = start + items_per_page
+            page_objekts = sorted_data[start:end]
+
+            desc_lines = [
+                f"**{member}** {season[0]}{series} x{copies}"
+                for _, member, season, _, series, _, _, copies in page_objekts
+            ]
+
+            embed = discord.Embed(
+                title=f"{prefix} Inventory (Page {page + 1}/{total_pages})",
+                description='\n'.join(desc_lines),
+                color=0xb19cd9
+            )
+            return embed
+        
+        class InventoryView(View):
+            def __init__(self):
+                super().__init__()
+                self.current_page = 0
+                self.current_sort = "date"
+                self.ascending = ascending
+            
+            async def update_embed(self, interaction: discord.Interaction):
+                embed = get_page_embed(self.current_page, self.current_sort, self.ascending)
+                await interaction.response.edit_message(embed=embed, view=self)
+            
+            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page > 0:
+                    self.current_page -= 1
+                elif self.current_page == 0:
+                    self.current_page = total_pages - 1
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page < total_pages - 1:
+                    self.current_page += 1
+                elif self.current_page == total_pages - 1:
+                    self.current_page = 0
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="Sort by Member", style=discord.ButtonStyle.blurple)
+            async def sort_by_member(self, interaction: discord.Interaction, button: Button):
+                self.current_sort = "member"
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="Sort by Season", style=discord.ButtonStyle.blurple)
+            async def sort_by_season(self, interaction: discord.Interaction, button: Button):
+                self.current_sort = "season"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Class", style=discord.ButtonStyle.blurple)
+            async def sort_by_class(self, interaction: discord.Interaction, button: Button):
+                self.current_sort = "class"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Series", style=discord.ButtonStyle.blurple)
+            async def sort_by_series(self, interaction: discord.Interaction, button: Button):
+                self.current_sort = "series"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Rarity", style=discord.ButtonStyle.blurple)
+            async def sort_by_rarity(self, interaction: discord.Interaction, button: Button):
+                self.current_sort = "rarity"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Copies", style=discord.ButtonStyle.blurple)
+            async def sort_by_copies(self, interaction: discord.Interaction, button: Button):
+                self.current_sort = "copies"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Toggle Asc/Desc", style=discord.ButtonStyle.blurple)
+            async def toggle_ascending(self, interaction: discord.Interaction, button: Button):
+                self.ascending = not self.ascending
+                await self.update_embed(interaction)
+
+        embed = get_page_embed(current_page, current_sort, ascending)
+        view = InventoryView()
+        await interaction.followup.send(embed=embed, view=view)     
+
+
+    def create_collage(self, image_urls, filename='collage.png', thumb_size=(130, 200), images_per_row=3):
+        def download_and_process_image(url):
             try:
-                response = requests.get(url)
+                response = requests.get(url, timeout=5)
+                response.raise_for_status()
                 img = Image.open(BytesIO(response.content))
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGBA")
                     background = Image.new("RGB", img.size, (255, 255, 255))
                     background.paste(img, mask=img.split()[3])
-                    img = background
+                    img=background
                 else:
-                    img = img.convert("RGB")
+                    img=img.convert("RGB")
                 img.thumbnail(thumb_size)
-                images.append(img)
+                return img
             except Exception as e:
                 print(f"Error loading image from {url}: {e}")
+                return None
+        
+        with ThreadPoolExecutor() as executor:
+            images = list(filter(None, executor.map(download_and_process_image, image_urls)))
             
         rows = (len(images) + images_per_row - 1) // images_per_row
         collage_width = thumb_size[0] * images_per_row
         collage_height = thumb_size[1] * rows
-        collage = Image.new('RGBA', (collage_width, collage_height), (0, 0, 0, 0))
+        collage = Image.new('RGBA', (collage_width, collage_height), (255, 255, 255))
 
         for index, img in enumerate(images):
             x = (index % images_per_row) * thumb_size[0]
@@ -513,10 +685,10 @@ class EconomyPlugin(Plugin):
         collage.save(filename, format='PNG')
         return filename
 
-    @app_commands.command(name="inv", description="View your inventory or another user's inventory.")
+    @app_commands.command(name="inv_images", description="View your or another user's inventory.")
     @app_commands.describe(
         user="The user whose inventory will be displayed. (Leave blank for your own)",
-        sort_by="Sort the inventory by member, season, class, series, amount owned, or rarity. (Leave blank to sort inventory by date added)",
+        sort_by="The sorting criteria for the inventory.",
         filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
         filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
         filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
@@ -524,38 +696,12 @@ class EconomyPlugin(Plugin):
     )
     @app_commands.choices(
         sort_by=[
-            app_commands.Choice(name="member", value="member"),
-            app_commands.Choice(name="season", value="season"),
-            app_commands.Choice(name="class", value="class"),
-            app_commands.Choice(name="series", value="series"),
-            app_commands.Choice(name="copies", value="copies"),
-            app_commands.Choice(name="rarity", value="rarity")
-        ],
-        filter_by_member=[
-            app_commands.Choice(name="Chaewon", value="ChaeWon"),
-            app_commands.Choice(name="Chaeyeon", value="ChaeYeon"),
-            app_commands.Choice(name="Dahyun", value="DaHyun"),
-            app_commands.Choice(name="Hayeon", value="HaYeon"),
-            app_commands.Choice(name="Hyerin", value="HyeRin"),
-            app_commands.Choice(name="Jiwoo", value="JiWoo"),
-            app_commands.Choice(name="Jiyeon", value="JiYeon"),
-            app_commands.Choice(name="Joobin", value="JooBin"),
-            app_commands.Choice(name="Kaede", value="Kaede"),
-            app_commands.Choice(name="Kotone", value="Kotone"),
-            app_commands.Choice(name="Lynn", value="Lynn"),
-            app_commands.Choice(name="Mayu", value="Mayu"),
-            app_commands.Choice(name="Nakyoung", value="NaKyoung"),
-            app_commands.Choice(name="Nien", value="Nien"),
-            app_commands.Choice(name="Seoah", value="SeoAh"),
-            app_commands.Choice(name="Seoyeon", value="SeoYeon"),
-            app_commands.Choice(name="Shion", value="ShiOn"),
-            app_commands.Choice(name="Sohyun", value="SoHyun"),
-            app_commands.Choice(name="Soomin", value="SooMin"),
-            app_commands.Choice(name="Sullin", value="Sullin"),
-            app_commands.Choice(name="Xinyu", value="Xinyu"),
-            app_commands.Choice(name="Yeonji", value="YeonJi"),
-            app_commands.Choice(name="Yooyeon", value="YooYeon"),
-            app_commands.Choice(name="Yubin", value="YuBin")
+            app_commands.Choice(name="Member", value="member"),
+            app_commands.Choice(name="Season", value="season"),
+            app_commands.Choice(name="Class", value="class"),
+            app_commands.Choice(name="Series", value="series"),
+            app_commands.Choice(name="Rarity", value="rarity"),
+            app_commands.Choice(name="Copies", value="copies"),
         ],
         filter_by_season=[
             app_commands.Choice(name="atom", value="Atom01"),
@@ -578,7 +724,7 @@ class EconomyPlugin(Plugin):
     async def inv_command(self,
                           interaction: discord.Interaction,
                           user: discord.User | None = None,
-                          sort_by: str | None = None,
+                          sort_by: app_commands.Choice[str] | None = None,
                           filter_by_member: str | None = None,
                           filter_by_season: str | None = None,
                           filter_by_class: str | None = None,
@@ -586,7 +732,9 @@ class EconomyPlugin(Plugin):
                           ):
         target = user or interaction.user
         user_id = str(target.id)
-        prefix = f"Your ({target})" if not user else f"{user}'s" 
+        prefix = f"Your ({target})" if not user else f"{user}'s"
+
+        await interaction.response.defer()
 
         query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
 
@@ -596,18 +744,11 @@ class EconomyPlugin(Plugin):
             query = query.filter(objekt__season=filter_by_season)
         if filter_by_class:
             query = query.filter(objekt__class_=filter_by_class)
-
-        if ascending:
-            query = query.order_by('updated_at')
-        else:
-            query = query.order_by('-updated_at')
-
-        objekts = await query
         
+        objekts = await query
+
         if not objekts:
-            await interaction.response.send_message(
-                f"{prefix} inventory is empty!"
-            )
+            await interaction.followup.send(f"{prefix} inventory is empty!")
             return
         
         objekt_data = [
@@ -619,124 +760,110 @@ class EconomyPlugin(Plugin):
                 objekt.objekt.series,
                 objekt.objekt.image_url,
                 objekt.objekt.rarity,
+                objekt.updated_at,
                 objekt.copies
             )
             for objekt in objekts
         ]
 
-        if sort_by:
-            sort_by = sort_by.lower()
-            if ascending:
-                if sort_by  == "member":
-                    objekt_data.sort(key=lambda x: x[1].lower())
-                elif sort_by == "season":
-                    objekt_data.sort(key=lambda x: x[2].lower())
-                elif sort_by == "class" or sort_by == "series":
-                    objekt_data.sort(key=lambda x: x[4].lower())
-                elif sort_by == "rarity":
-                    objekt_data.sort(key=lambda x: x[6])
-                elif sort_by == "copies":
-                    objekt_data.sort(key=lambda x: x[7])
-                
+        sort_by_value = sort_by.value if sort_by else "updated_at"
+
+        def sort_inventory(data, sort_by, ascending):
+            if sort_by == "member":
+                return sorted(data, key=lambda x: x[1].lower(), reverse=not ascending)
+            elif sort_by == "season":
+                return sorted(data, key=lambda x: x[2].lower(), reverse=not ascending)
+            elif sort_by == "class":
+                return sorted(data, key=lambda x: x[3].lower(), reverse=not ascending)
+            elif sort_by == "series":
+                return sorted(data, key=lambda x: x[4].lower(), reverse=not ascending)
+            elif sort_by == "rarity":
+                return sorted(data, key=lambda x: x[6], reverse=not ascending)
+            elif sort_by == "copies":
+                return sorted(data, key=lambda x: x[8], reverse=not ascending)
             else:
-                if sort_by  == "member":
-                    objekt_data.sort(key=lambda x: x[1].lower(), reverse=True)
-                elif sort_by == "season":
-                    objekt_data.sort(key=lambda x: x[2].lower(), reverse=True)
-                elif sort_by == "class" or sort_by == "series":
-                    objekt_data.sort(key=lambda x: x[4].lower(), reverse=True)
-                elif sort_by == "rarity":
-                    objekt_data.sort(key=lambda x: x[6], reverse=True)
-                elif sort_by == "copies":
-                    objekt_data.sort(key=lambda x: x[7], reverse=True)
+                return sorted(data, key=lambda x: x[7], reverse=not ascending)
         
-        objekts_per_page = 9
-        total_pages = (len(objekt_data) + objekts_per_page - 1) // objekts_per_page
-        page = 0
+        sorted_data = sort_inventory(objekt_data, sort_by_value, ascending)
+        image_urls = [url for _, _, _, _, _, url, _, _, _ in sorted_data if url]
 
-        def get_page_embed(page):
-            start = page * objekts_per_page
-            end = start + objekts_per_page
-            page_objekts = objekt_data[start:end]
-            image_urls = [url for _, _, _, _, _, url, _, _ in page_objekts if url]
+        if not image_urls:
+            await interaction.followup.send(f"{prefix} inventory has no images to display!", ephemeral=True)
+            return
+        
+        items_per_page = 9
+        total_pages = (len(objekt_data) + items_per_page - 1) // items_per_page
+        current_page = 0
 
-            collage_path = self.create_collage(image_urls, filename=f'collage_{user_id}.png')
-
+        def create_collage_for_page(page):
+            start = page * items_per_page
+            end = start + items_per_page
+            page_image_urls = image_urls[start:end]
+            page_objekts = sorted_data[start:end]
             desc_lines = [
                 f"**{member}** {season[0]}{series} x{copies}"
-                for _, member, season, _, series, _, _, copies in page_objekts
+                for _, member, season, _, series, _, _, _, copies in page_objekts
             ]
-
-            embed = discord.Embed(
-                title=f"{prefix} Inventory (Page {page + 1}/{total_pages})",
-                description='\n'.join(desc_lines),
-                color=0xB19CD9
-            )
-
-            return embed, collage_path
-
-        await interaction.response.defer()
-
-        embed, collage_path = get_page_embed(page)
-        file = discord.File(collage_path, filename="collage.png")
-        embed.set_image(url="attachment://collage.png")
-        message = await interaction.followup.send(embed=embed, file=file)
-
-        if total_pages > 1:
-            await message.add_reaction("◀️")
-            await message.add_reaction("▶️")
-
-            def check(reaction, user):
-                return (
-                    user == interaction.user and
-                    str(reaction.emoji) in ["◀️", "▶️"] and
-                    reaction.message.id == message.id
-                )
-            
-            while True:
+            description = "\n".join(desc_lines)
+            collage_path = self.create_collage(page_image_urls, filename=f'collage_{target.name}_page_{page}.png')
+            return collage_path, description
+        
+        class InventoryImageView(View):
+            def __init__(self):
+                super().__init__()
+                self.current_page = 0
+                
+            async def update_embed(self, interaction: discord.Interaction):
                 try:
-                    reaction, _ = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
+                    collage_path, description = create_collage_for_page(self.current_page)
+                    file = discord.File (collage_path, filename="collage.png")
 
-                    if str(reaction.emoji) == "▶️" and page < total_pages - 1:
-                        page += 1
-                    elif str(reaction.emoji) == "◀️" and page > 0:
-                        page -= 1
-                    elif str(reaction.emoji) == "◀️" and page == 0:
-                        page = total_pages - 1
-                    elif str(reaction.emoji) == "▶️" and page == total_pages - 1:
-                        page = 0
+                    embed = discord.Embed(
+                        title=f"{prefix} Inventory (Page {self.current_page + 1}/{total_pages})",
+                        description=f"{description}",
+                        color=0xb19cd9
+                    )
+                    embed.set_image(url="attachment://collage.png")
+
+                    if interaction.response.is_done():
+                        await interaction.followup.send(embed=embed, file=file, view=self)
                     else:
-                        await message.remove_reaction(reaction.emoji, interaction.user)
-                        continue
-
+                        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
                     if os.path.exists(collage_path):
                         os.remove(collage_path)
-
-                    embed, collage_path = get_page_embed(page)
-                    file = discord.File(collage_path, filename="collage.png")
-                    embed.set_image(url="attachment://collage.png")
-                    await message.edit(embed=embed, attachments=[file])
-                    await message.remove_reaction(reaction.emoji, interaction.user)
-                except asyncio.TimeoutError:
-                    break
+                except  discord.errors.NotFound:
+                    await interaction.followup.send("This interaction has expired. Please try again.", ephemeral=True)
+                
+            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page > 0:
+                    self.current_page -= 1
+                elif self.current_page == 0:
+                    self.current_page = total_pages - 1
+                await self.update_embed(interaction)
             
-            if os.path.exists(collage_path):
-                os.remove(collage_path)
+            @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page < total_pages - 1:
+                    self.current_page += 1
+                elif self.current_page == total_pages - 1:
+                    self.current_page = 0
+                await self.update_embed(interaction)
+        
+        collage_path, description = create_collage_for_page(current_page)
+        file = discord.File(collage_path, filename="collage.png")
+        embed= discord.Embed(
+            title=f"{prefix} Inventory (Page {current_page + 1}/{total_pages})",
+            description=f"{description}",
+            color=0xb19cd9
+        )
+        embed.set_image(url="attachment://collage.png")
 
-    @inv_command.error
-    async def spin_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, app_commands.CommandOnCooldown):
-            remaining = int(error.retry_after)
-            hours = remaining // 3600
-            minutes = (remaining % 3600) // 60
-            seconds = remaining % 60
-            time_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
-            await interaction.response.send_message(
-                f"Try again in **{time_str}**.",
-                ephemeral=True
-            )
-        else:
-            raise error
+        view = InventoryImageView()
+        await interaction.followup.send(embed=embed, file=file, view=view)
+
+        if os.path.exists(collage_path):
+            os.remove(collage_path)
         
     @app_commands.command(name="rob", description="Steal an objekt from another user.")
     @app_commands.describe(target="The user to rob.")
@@ -1067,28 +1194,30 @@ class EconomyPlugin(Plugin):
 
         # slot machine definition
         symbols = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
-        weights = [0.3, 0.25, 0.2, 0.15, 0.07, 0.03]
+        reel_1_weights = [0.5, 0.25, 0.15, 0.07, 0.025, 0.005]  # Higher chance for common symbols
+        reel_2_weights = [0.45, 0.3, 0.15, 0.07, 0.025, 0.005]
+        reel_3_weights = [0.4, 0.3, 0.2, 0.07, 0.025, 0.005]
 
-        reel_1 = random.choices(symbols, weights)[0]
-        reel_2 = random.choices(symbols, weights)[0]
-        reel_3 = random.choices(symbols, weights)[0]
+        reel_1 = random.choices(symbols, reel_1_weights)[0]
+        reel_2 = random.choices(symbols, reel_2_weights)[0]
+        reel_3 = random.choices(symbols, reel_3_weights)[0]
 
         result = [reel_1, reel_2, reel_3]
         payout = 0
 
         payout_multipliers = {
-            "🍒": 2,  # Common symbol, lower payout
-            "🍋": 3,
+            "🍒": 3,  # Common symbol, lower payout
+            "🍋": 4,
             "🍊": 5,
-            "🍇": 10,
-            "⭐": 20,
-            "💎": 50  # Rare symbol, higher payout
+            "🍇": 6,
+            "⭐": 10,
+            "💎": 20  # Rare symbol, higher payout
         }
 
         if result.count(reel_1) == 3:
             payout = bet * payout_multipliers[reel_1]
         elif result.count(reel_1) == 2 or result.count(reel_2) == 2:
-            payout = bet * 1.5
+            payout = bet * 2
         
         user_data.balance += payout
         await user_data.save()
