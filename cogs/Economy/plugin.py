@@ -1089,12 +1089,12 @@ class EconomyPlugin(Plugin):
         users = await EconomyModel.all()
 
         buy_values = {
-            1: 5,
-            2: 15,
-            3: 35,
-            4: 75,
-            5: 200,
-            6: 1000,
+            1: 50,
+            2: 150,
+            3: 350,
+            4: 750,
+            5: 2000,
+            6: 10000,
         }
         rarity_tiers = [1, 2, 3, 4, 5, 6]
 
@@ -1210,8 +1210,8 @@ class EconomyPlugin(Plugin):
             "🍋": 4,
             "🍊": 5,
             "🍇": 6,
-            "⭐": 10,
-            "💎": 20  # Rare symbol, higher payout
+            "⭐": 7,
+            "💎": 10  # Rare symbol, higher payout
         }
 
         if result.count(reel_1) == 3:
@@ -1225,19 +1225,19 @@ class EconomyPlugin(Plugin):
         # slots display
         slot_display = f"🎰 **SLOTS** 🎰\n| {reel_1} | {reel_2} | {reel_3} |\n"
 
-        if payout / bet == 2:
+        if payout / bet == 3:
             result_message = f"🎉Win! {interaction.user.mention} won **{payout} como**! 🎉"
-        elif payout / bet == 3:
+        elif payout / bet == 4:
             result_message = f"🎉 Small win! {interaction.user.mention} won **{payout} como**! 🎉"
         elif payout / bet == 5:
             result_message = f"🎉 Big win! {interaction.user.mention} won **{payout} como**! 🎉"
-        elif payout / bet == 10:
+        elif payout / bet == 6:
             result_message = f"🎉 Huge win! {interaction.user.mention} won **{payout} como**! 🎉"
-        elif payout / bet == 20:
+        elif payout / bet == 7:
             result_message = f"🎉 Tremendous win! {interaction.user.mention} won **{payout} como**! 🎉"
-        elif payout / bet == 50:
+        elif payout / bet == 10:
             result_message = f"🎉 JACKPOT!!! {interaction.user.mention} won **{payout} como**!!! 🎉"
-        elif payout / bet == 1.5:
+        elif payout / bet == 2:
             result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
         else: 
             result_message = "😢 Better luck next time!"
