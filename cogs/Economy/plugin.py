@@ -467,7 +467,7 @@ class EconomyPlugin(Plugin):
                 embed.set_image(url=card.image_url)
             footer_text = (
                 f"Don't forget to set a new chase objekt with /set_chase!\n"
-                f"You earned **{como_reward} como** from this spin!"
+                f"You earned {como_reward} como from this spin!"
             )
             embed.set_footer(text="{footer_text}")
         else:
@@ -1419,5 +1419,186 @@ class EconomyPlugin(Plugin):
         view = PaginationView()
         await interaction.response.send_message(embed=embed, view=view)
 
-async def setup(bot: Bot):
+    @app_commands.command(name="collection_percentage", description="View your collection completion percentage.")
+    @app_commands.describe(user="Indicate who's collection to view. (Leave blank to view your own)",
+                           member="View your collection for a specific member.",
+                           season="View your collection for a specifc season.",
+                           class_="View your collection for a specific class of objekts")
+    @app_commands.choices(
+        season=[
+            app_commands.Choice(name="atom", value="Atom01"),
+            app_commands.Choice(name="binary", value="Binary01"),
+            app_commands.Choice(name="cream", value="Cream01"),
+            app_commands.Choice(name="divine", value="Divine01"),
+            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.Choice(name="customs", value="GNDSG00")
+        ],
+        class_=[
+            app_commands.Choice(name="customs", value="Never"),
+            app_commands.Choice(name="first", value="First"),
+            app_commands.Choice(name="double", value="Double"),
+            app_commands.Choice(name="special", value="Special"),
+            app_commands.Choice(name="welcome", value="Welcome"),
+            app_commands.Choice(name="zero", value="Zero"),
+            app_commands.Choice(name="premier", value="Premier")
+        ]
+    )
+    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.choice[str] | None = None, class_: app_commands.Choice[str] | None = None):
+        target = user or interaction.user
+        user_id = str(target.id)
+        prefix = f"Your ({target})" if not user else f"{user}'s"
+
+        # only one filter at a time
+        active_filters = sum(bool(x) for x in [member, season, class_])
+        if active_filters > 1:
+            await interaction.response.send_message("You can only filter by one of `member`, `Season`, or `class` at a time.", ephemeral=True)
+            return
+
+        # apply filters
+        query = ObjektModel.all()
+        if member:
+            query = query.filter(member__iexact=member)
+        if season:
+            query = query.filter(season=season.value)
+        if class_:
+            query = query.filter(class_=class_.value)
+        
+        # fetch objekts based on filters
+        total_objekts = await query.all()
+
+        # feth user's filtered collected objekts
+        collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__in=total_objekts).prefetch_related("objekt")
+        collected_ids = {entry.objekt.id for entry in collected_objekts}
+
+        # separate collected from missing
+        collected = [objekt for objekt in total_objekts if objekt.id in collected_ids]
+        missing = [objekt for objekt in total_objekts if objekt.id not in collected_ids]
+
+        total_count = len(total_objekts)
+        collected_count = len(collected)
+        if total_objekts == 0:
+            collection_percentage = 0
+        else:
+            collection_percentage = (collected_objekts / total_objekts) * 100
+        
+        if member:
+            title = f"{prefix} Collection ({member}):"
+        elif season:
+            title = f"{prefix} Collection ({season.name}):"
+        elif class_:
+            title = f"{prefix} Collection ({class_.name}):"
+        else:
+            title = f"{prefix} Collection:"
+
+        items_per_page = 9
+        total_pages = max((len(collected) + items_per_page - 1) // items_per_page, (len(missing) + items_per_page - 1) // items_per_page)
+        current_page = 0
+
+        def get_page_embed(page):
+            start = page * items_per_page
+            end = start + items_per_page
+
+            collected_page = collected[start:end]
+            missing_page = missing[start:end]
+
+            collected_details = [
+                f"{objekt.member} {objekt.season[0]}{objekt.series}" for objekt in collected_page
+            ]
+            missing_details = [
+                f"{objekt.member} {objekt.season[0]}{objekt.series}" for objekt in missing_page
+            ]
+
+            embed = discord.Embed(
+                title=title,
+                description=f"Collection Progress: **{collection_percentage:.2f}%** ({collected_count}/{total_count})",
+                color=0x008800
+            )
+            embed.add_field(
+            name="Collected",
+            value="\n".join(collected_details) or "None",
+            inline=True
+            )
+            embed.add_field(
+                name="Missing",
+                value="\n".join(missing_details) or "None",
+                inline=True
+            )
+            embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+
+            return embed
+        
+        class PaginationView(View):
+            def __init__(self):
+                super().__init__()
+                self.current_page = 0
+
+            async def update_embed(self, interaction: discord.Interaction):
+                embed = get_page_embed(self.current_page)
+                await interaction.response.edit_message(embed=embed, view=self)
+            
+            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page > 0:
+                    self.current_page -= 1
+                elif self.current_page == 0:
+                    self.current_page = total_pages - 1
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page < total_pages - 1:
+                    self.current_page += 1
+                elif self.current_page == total_pages - 1:
+                    self.current_page = 0
+                await self.update_embed(interaction)
+            
+        embed = get_page_embed(current_page)
+        view = PaginationView()
+        await interaction.response.send_message(embed=embed, view=view)
+
+
+        def group_by_season_and_class(objekts):
+            grouped = {}
+            for objekt in objekts:
+                season = objekt.season
+                class_ = objekt.class_
+                if season not in grouped:
+                    grouped[season] = {}
+                if class_ not in grouped[season]:
+                    grouped[season][class_] = []
+                grouped[season][class_].append(objekt)
+            return grouped
+        
+        collected_grouped = group_by_season_and_class(collected)
+        missing_grouped = group_by_season_and_class(missing)
+        
+        embed = discord.Embed(
+            title=f"{prefix} Collection Progress",
+            description=f"Overall Collection: **{collection_percentage:.2f}%** ({collected_count}/{total_count})",
+            color=0x0008800
+        )
+
+        for season, classes in collected_grouped.items():
+            collected_details = []
+            missing_details = []
+            for class_, objekts in classes.items():
+                collected_details.append(f"**{class_}**: {len(objekts)}")
+            for class_, objekts in missing_grouped.get(season, {}).items():
+                missing_details.append(f"**{class_}**: {len(objekts)}")
+            
+            embed.add_field(
+                name=f"Collected",
+                value="\n".join(collected_details) or "None",
+                inline=True
+            )
+            embed.add_field(
+                name=f"Missing",
+                value="\n".join(missing_details) or "None",
+                inline=True
+            )
+        
+        await interaction.response.send_message(embed=embed)
+
+
+async def setup(bot: Bot): 
     await bot.add_cog(EconomyPlugin(bot))
