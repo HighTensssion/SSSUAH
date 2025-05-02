@@ -762,7 +762,7 @@ class EconomyPlugin(Plugin):
         query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
 
         if filter_by_member:
-            query = query.filter(objekt__member=filter_by_member)
+            query = query.filter(objekt__member__iexact=filter_by_member)
         if filter_by_season:
             query = query.filter(objekt__season=filter_by_season)
         if filter_by_class:
@@ -1443,7 +1443,7 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="premier", value="Premier")
         ]
     )
-    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.choice[str] | None = None, class_: app_commands.Choice[str] | None = None):
+    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None):
         target = user or interaction.user
         user_id = str(target.id)
         prefix = f"Your ({target})" if not user else f"{user}'s"
@@ -1466,8 +1466,10 @@ class EconomyPlugin(Plugin):
         # fetch objekts based on filters
         total_objekts = await query.all()
 
+        total_objekt_ids = [objekt.id for objekt in total_objekts]
+
         # feth user's filtered collected objekts
-        collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__in=total_objekts).prefetch_related("objekt")
+        collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekt_ids).prefetch_related("objekt")
         collected_ids = {entry.objekt.id for entry in collected_objekts}
 
         # separate collected from missing
@@ -1479,7 +1481,7 @@ class EconomyPlugin(Plugin):
         if total_objekts == 0:
             collection_percentage = 0
         else:
-            collection_percentage = (collected_objekts / total_objekts) * 100
+            collection_percentage = (collected_count / total_count) * 100
         
         if member:
             title = f"{prefix} Collection ({member}):"
