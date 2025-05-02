@@ -485,7 +485,7 @@ class EconomyPlugin(Plugin):
             footer_text = (
                 f"{copies_message}\n"
                 f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
-                f"You earned **{como_reward} como** from this spin!"
+                f"You earned {como_reward} como from this spin!"
             )
             embed.set_footer(text=footer_text)
             
@@ -1249,21 +1249,21 @@ class EconomyPlugin(Plugin):
         slot_display = f"🎰 **SLOTS** 🎰\n| {reel_1} | {reel_2} | {reel_3} |\n"
 
         if payout / bet == 3:
-            result_message = f"🎉Win! {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉Win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         elif payout / bet == 4:
-            result_message = f"🎉 Small win! {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉 Small win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         elif payout / bet == 5:
-            result_message = f"🎉 Big win! {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉 Big win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         elif payout / bet == 6:
-            result_message = f"🎉 Huge win! {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉 Huge win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         elif payout / bet == 7:
-            result_message = f"🎉 Tremendous win! {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉 Tremendous win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         elif payout / bet == 10:
-            result_message = f"🎉 JACKPOT!!! {interaction.user.mention} won **{payout} como**!!! 🎉"
+            result_message = f"🎉 JACKPOT!!! {interaction.user.mention} bet {bet} como and wins **{payout} como**!!! 🎉\n {interaction.user} now has {user_data.balance} como."
         elif payout / bet == 2:
-            result_message = f"🎉 {interaction.user.mention} won **{payout} como**! 🎉"
+            result_message = f"🎉 {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         else: 
-            result_message = "😢 Better luck next time!"
+            result_message = f"😢 {interaction.user.mention} bet {bet} como and lost... Better luck next time..."
         
         await interaction.response.send_message(f"{slot_display}\n\n{result_message}")
     
@@ -1607,7 +1607,7 @@ class EconomyPlugin(Plugin):
         season="Filter the leaderboard by a specific season.",
         mode="Toggle between percent complete or total copies owned."
     )
-    @app_commands.choises(
+    @app_commands.choices(
         mode=[
             app_commands.Choice(name="Percent Complete", value="percent"),
             app_commands.Choice(name="Copies Owned", value="copies")
@@ -1622,9 +1622,11 @@ class EconomyPlugin(Plugin):
         ]
     )
     async def leaderboard_command(self, interaction: discord.Interaction, member: str | None = None, season: app_commands.Choice[str] | None = None, mode: app_commands.Choice[str] = None):
+        await interaction.response.defer()
+
         active_filters = sum(bool(x) for x in [member, season])
         if active_filters > 1:
-            await interaction.response.send_message("You can only filter by one of `member` or `season` at a time.", ephemeral=True)
+            await interaction.followup.send("You can only filter by one of `member` or `season` at a time.", ephemeral=True)
             return
         
         query = ObjektModel.all()
@@ -1641,17 +1643,20 @@ class EconomyPlugin(Plugin):
 
         for user in users:
             user_id = str(user.id)
+            discord_user = await self.bot.fetch_user(user_id)
+            user_name = discord_user.name if discord_user else "Unknown User"
+
             collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekts_ids).prefetch_related("objekt")
 
             if mode and mode.value == "copies":
                 total_copies = sum(entry.copies for entry in collected_objekts)
-                leaderboard_data.append((user_id, user.name, total_copies))
+                leaderboard_data.append((user_id, user_name, total_copies))
             else:
                 collected_ids = {entry.objekt.id for entry in collected_objekts}
                 collected_count = len(collected_ids)
                 total_count = len(total_objekts)
                 percent_complete = (collected_count / total_count) * 100 if total_count > 0 else 0
-                leaderboard_data.append((user_id, user.name, percent_complete))
+                leaderboard_data.append((user_id, user_name, percent_complete, collected_count, total_count))
         
         leaderboard_data.sort(key=lambda x: x[2], reverse=True)
 
@@ -1663,17 +1668,19 @@ class EconomyPlugin(Plugin):
         if member:
             embed_title += f" ({member}):"
         elif season:
-            embed_title += f" ({season}):"
+            embed_title += f" ({season.value}):"
         
         embed = discord.Embed(title=embed_title, color=0xFFD700)
 
-        for rank, (user_id, user_name, value) in enumerate(leaderboard_data[:10], start=1):
+        for rank, entry in enumerate(leaderboard_data[:10], start=1):
             if mode and mode.value == "copies":
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**{value}** copies held", inline=False)
+                user_id, user_name, total_copies = entry
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies}** copies held", inline=False)
             else:
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**{value:.2f}% complete**", inline=False)
+                user_id, user_name, percent_complete, collected_count, total_count = entry
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count}/{total_count})** | **{percent_complete:.2f}%** complete", inline=False)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot: Bot): 
     await bot.add_cog(EconomyPlugin(bot))
