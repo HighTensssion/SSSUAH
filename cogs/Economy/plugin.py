@@ -1600,7 +1600,80 @@ class EconomyPlugin(Plugin):
             )
         
         await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="leaderboard", description="View the leaderboard of users with the most collected objekts.")
+    @app_commands.describe(
+        member="Filter the leaderboard by a specific member.",
+        season="Filter the leaderboard by a specific season.",
+        mode="Toggle between percent complete or total copies owned."
+    )
+    @app_commands.choises(
+        mode=[
+            app_commands.Choice(name="Percent Complete", value="percent"),
+            app_commands.Choice(name="Copies Owned", value="copies")
+        ],
+        season=[
+            app_commands.Choice(name="atom", value="Atom01"),
+            app_commands.Choice(name="binary", value="Binary01"),
+            app_commands.Choice(name="cream", value="Cream01"),
+            app_commands.Choice(name="divine", value="Divine01"),
+            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.Choice(name="customs", value="GNDSG00")
+        ]
+    )
+    async def leaderboard_command(self, interaction: discord.Interaction, member: str | None = None, season: app_commands.Choice[str] | None = None, mode: app_commands.Choice[str] = None):
+        active_filters = sum(bool(x) for x in [member, season])
+        if active_filters > 1:
+            await interaction.response.send_message("You can only filter by one of `member` or `season` at a time.", ephemeral=True)
+            return
+        
+        query = ObjektModel.all()
+        if member:
+            query = query.filter(member__iexact=member)
+        if season:
+            query = query.filter(season=season.value)
+        
+        total_objekts = await query.all()
+        total_objekts_ids = [objekt.id for objekt in total_objekts]
 
+        users = await EconomyModel.all()
+        leaderboard_data = []
+
+        for user in users:
+            user_id = str(user.id)
+            collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekts_ids).prefetch_related("objekt")
+
+            if mode and mode.value == "copies":
+                total_copies = sum(entry.copies for entry in collected_objekts)
+                leaderboard_data.append((user_id, user.name, total_copies))
+            else:
+                collected_ids = {entry.objekt.id for entry in collected_objekts}
+                collected_count = len(collected_ids)
+                total_count = len(total_objekts)
+                percent_complete = (collected_count / total_count) * 100 if total_count > 0 else 0
+                leaderboard_data.append((user_id, user.name, percent_complete))
+        
+        leaderboard_data.sort(key=lambda x: x[2], reverse=True)
+
+        embed_title = "GNDSG Slur Gacha Leaderboard"
+        if mode and mode.value == "copies":
+            embed_title += f" by Copies"
+        else:
+            embed_title += f" by Percent Complete"
+        if member:
+            embed_title += f" ({member}):"
+        elif season:
+            embed_title += f" ({season}):"
+        
+        embed = discord.Embed(title=embed_title, color=0xFFD700)
+
+        for rank, (user_id, user_name, value) in enumerate(leaderboard_data[:10], start=1):
+            if mode and mode.value == "copies":
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**{value}** copies held", inline=False)
+            else:
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**{value:.2f}% complete**", inline=False)
+        
+        await interaction.response.send_message(embed=embed)
 
 async def setup(bot: Bot): 
     await bot.add_cog(EconomyPlugin(bot))
