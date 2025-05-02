@@ -332,7 +332,7 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="customs", value="gndsg00")
         ]
     )
-    async def set_chase_command(self, interaction: discord.Interaction, season: str, member: str, series: int):
+    async def set_chase_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
         user_id = str(interaction.user.id)
         objekt_slug = f"{season}-{member}-{series}".lower()
 
@@ -469,7 +469,7 @@ class EconomyPlugin(Plugin):
                 f"Don't forget to set a new chase objekt with /set_chase!\n"
                 f"You earned {como_reward} como from this spin!"
             )
-            embed.set_footer(text="{footer_text}")
+            embed.set_footer(text=footer_text)
         else:
             embed = discord.Embed(
                 title=f"You ({interaction.user}) received a{rarity_str}objekt!",
@@ -832,11 +832,16 @@ class EconomyPlugin(Plugin):
             return collage_path, description
         
         class InventoryImageView(View):
-            def __init__(self):
+            def __init__(self, user_id: int):
                 super().__init__()
                 self.current_page = 0
+                self.user_id = user_id
                 
             async def update_embed(self, interaction: discord.Interaction):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                
                 try:
                     collage_path, description = create_collage_for_page(self.current_page)
                     file = discord.File (collage_path, filename="collage.png")
@@ -859,14 +864,23 @@ class EconomyPlugin(Plugin):
                 
             @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
             async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                
                 if self.current_page > 0:
                     self.current_page -= 1
                 elif self.current_page == 0:
                     self.current_page = total_pages - 1
                 await self.update_embed(interaction)
             
-            @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
+            @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
             async def next_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                
+
                 if self.current_page < total_pages - 1:
                     self.current_page += 1
                 elif self.current_page == total_pages - 1:
@@ -882,7 +896,7 @@ class EconomyPlugin(Plugin):
         )
         embed.set_image(url="attachment://collage.png")
 
-        view = InventoryImageView()
+        view = InventoryImageView(user_id=interaction.user.id)
         await interaction.followup.send(embed=embed, file=file, view=view)
 
         if os.path.exists(collage_path):
@@ -1023,6 +1037,10 @@ class EconomyPlugin(Plugin):
     
     def create_sell_callback(self, user_id: str, rarity: int, leave: int):
         async def callback(interaction: discord.Interaction):
+            # Ensure the button is locked to the command caller
+            if str(interaction.user.id) != user_id:
+                await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
+                return
             # inventory
             collection_entries = await CollectionModel.filter(user_id=user_id, objekt__rarity=rarity).prefetch_related("objekt")
             if not collection_entries:
@@ -1175,9 +1193,14 @@ class EconomyPlugin(Plugin):
         embed = discord.Embed(title=f"{interaction.user.name}'s Shop", color=0x000000)
         buttons = []
         for index, item in enumerate(shop_items):
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=item.objekt.id).first()
+            if collection_entry:
+                ownership_info = f"Owned: **{collection_entry.copies}** copies."
+            else:
+                ownership_info = "Not Owned"
             embed.add_field(
                 name=f"{item.objekt.member} {item.objekt.season[0]}{item.objekt.series}",
-                value=f"Rarity: {item.objekt.rarity}\nPrice: {item.price} como\n[View Objekt]({item.objekt.image_url})\n\n",
+                value=f"Rarity: {item.objekt.rarity}\nPrice: {item.price} como\n{ownership_info}\n[View Objekt]({item.objekt.image_url})\n\n",
                 inline=True
             )
 
@@ -1217,9 +1240,9 @@ class EconomyPlugin(Plugin):
 
         # slot machine definition
         symbols = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
-        reel_1_weights = [0.5, 0.25, 0.15, 0.07, 0.025, 0.005]  # Higher chance for common symbols
-        reel_2_weights = [0.45, 0.3, 0.15, 0.07, 0.025, 0.005]
-        reel_3_weights = [0.4, 0.3, 0.2, 0.07, 0.025, 0.005]
+        reel_1_weights = [0.6, 0.2, 0.1, 0.05, 0.04, 0.01]  # Higher chance for common symbols
+        reel_2_weights = [0.1, 0.5, 0.2, 0.1, 0.08, 0.02]
+        reel_3_weights = [0.05, 0.1, 0.5, 0.15, 0.08, 0.02]
 
         reel_1 = random.choices(symbols, reel_1_weights)[0]
         reel_2 = random.choices(symbols, reel_2_weights)[0]
@@ -1263,7 +1286,7 @@ class EconomyPlugin(Plugin):
         elif payout / bet == 2:
             result_message = f"🎉 {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         else: 
-            result_message = f"😢 {interaction.user.mention} bet {bet} como and lost... Better luck next time..."
+            result_message = f"😢 {interaction.user.mention} bet {bet} como and lost, leaving them with {user_data.balance} como... Better luck next time..."
         
         await interaction.response.send_message(f"{slot_display}\n\n{result_message}")
     
@@ -1326,45 +1349,122 @@ class EconomyPlugin(Plugin):
     @app_commands.command(name="compare", description="Compare two users' inventories.")
     @app_commands.describe(
         user1="The first user to compare. (deafulats to command caller)",
-        user2="The second user to compare."
+        user2="The second user to compare.",
+        filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
+        filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
+        filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
+        sort_by="The sorting criteria for the inventory.",
+        ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)"
     )
-    async def compare_inventories_command(self, interaction: discord.Interaction, user2: discord.User, user1: discord.User | None = None):
-        if user1:
-            user1_id = str(user1.id)
-            user2_id = str(user2.id)
-        else:
-            user1 = interaction.user
-            user1_id = str(user1.id)
-            user2_id = str(user2.id)
+    @app_commands.choices(
+        sort_by=[
+            app_commands.Choice(name="Member", value="member"),
+            app_commands.Choice(name="Season", value="season"),
+            app_commands.Choice(name="Class", value="class"),
+            app_commands.Choice(name="Series", value="series"),
+            app_commands.Choice(name="Rarity", value="rarity"),
+            app_commands.Choice(name="Copies", value="copies"),
+        ],
+        filter_by_season=[
+            app_commands.Choice(name="atom", value="Atom01"),
+            app_commands.Choice(name="binary", value="Binary01"),
+            app_commands.Choice(name="cream", value="Cream01"),
+            app_commands.Choice(name="divine", value="Divine01"),
+            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.Choice(name="customs", value="GNDSG00")
+        ],
+        filter_by_class=[
+            app_commands.Choice(name="zero", value="Zero"),
+            app_commands.Choice(name="welcome", value="Welcome"),
+            app_commands.Choice(name="first", value="First"),
+            app_commands.Choice(name="special", value="Special"),
+            app_commands.Choice(name="double", value="Double"),
+            app_commands.Choice(name="customs", value="Never"),
+            app_commands.Choice(name="premier", value="Premier")
+        ]
+    )
+    async def compare_inventories_command(self, interaction: discord.Interaction, user2: discord.User, user1: discord.User | None = None, filter_by_member: str | None = None, filter_by_season: app_commands.Choice[str] | None = None, filter_by_class: app_commands.Choice[str] | None = None, sort_by: app_commands.Choice[str] | None = None, ascending: bool | None = False):
+        user1 = user1 or interaction.user
+        user1_id = str(user1.id)
+        user2_id = str(user2.id)
         
         # fetch inventory
-        user1_inventory = await CollectionModel.filter(user_id=user1_id).prefetch_related("objekt")
-        user2_inventory = await CollectionModel.filter(user_id=user2_id).prefetch_related("objekt")
+        query1 = CollectionModel.filter(user_id=user1_id).prefetch_related("objekt")
+        query2 = CollectionModel.filter(user_id=user2_id).prefetch_related("objekt")
 
-        # extract slugs to compare
-        user1_objekts = {entry.objekt.slug for entry in user1_inventory}
-        user2_objekts = {entry.objekt.slug for entry in user2_inventory}
+        # filter
+        if filter_by_member:
+            query1 = query1.filter(objekt__member__iexact=filter_by_member)
+            query2 = query2.filter(objekt__member__iexact=filter_by_member)
+        if filter_by_season:
+            query1 = query1.filter(objekt__season=filter_by_season.value)
+            query2 = query2.filter(objekt__season=filter_by_season.value)
+        if filter_by_class:
+            query1 = query1.filter(objekt__class_=filter_by_class.value)
+            query2 = query2.filter(objekt__class_=filter_by_class.value)
+
+        user1_inventory = await query1
+        user2_inventory = await query2
+
+        # extract data for sort
+        user1_objekts = [
+            (
+                entry.objekt.id,
+                entry.objekt.member,
+                entry.objekt.season,
+                entry.objekt.class_,
+                entry.objekt.series,
+                entry.objekt.image_url,
+                entry.objekt.rarity,
+                entry.copies
+            )
+            for entry in user1_inventory
+        ]
+        user2_objekts = [
+            (
+                entry.objekt.id,
+                entry.objekt.member,
+                entry.objekt.season,
+                entry.objekt.class_,
+                entry.objekt.series,
+                entry.objekt.image_url,
+                entry.objekt.rarity,
+                entry.copies
+            )
+            for entry in user2_inventory
+        ]
+
+        # sorting
+        sort_by_value = sort_by.value if sort_by else "member"
+
+        def sort_inventory(data, sort_by, ascending):
+            if sort_by == "member":
+                return sorted(data, key=lambda x: x[1].lower(), reverse=not ascending)
+            elif sort_by == "season":
+                return sorted(data, key=lambda x: x[2].lower(), reverse=not ascending)
+            elif sort_by == "class":
+                return sorted(data, key=lambda x: x[3].lower(), reverse=not ascending)
+            elif sort_by == "series":
+                return sorted(data, key=lambda x: x[4].lower(), reverse=not ascending)
+            elif sort_by == "rarity":
+                return sorted(data, key=lambda x: x[6], reverse=not ascending)
+            elif sort_by == "copies":
+                return sorted(data, key=lambda x: x[7], reverse=not ascending)
+            else:
+                return data
+
+        user1_objekts = sort_inventory(user1_objekts, sort_by_value, ascending)
+        user2_objekts = sort_inventory(user2_objekts, sort_by_value, ascending)
 
         # differentials
-        user1_only = user1_objekts - user2_objekts
-        user2_only = user2_objekts - user1_objekts
+        user1_only = [objekt for objekt in user1_objekts if objekt[0] not in {obj[0] for obj in user2_objekts}]
+        user2_only = [objekt for objekt in user2_objekts if objekt[0] not in {obj[0] for obj in user1_objekts}]
 
-        # fetch objekt details
-        user1_only_details = await ObjektModel.filter(slug__in=user1_only).all()
-        user2_only_details = await ObjektModel.filter(slug__in=user2_only).all()
-
-        user1_field_data = [
-            f"[{obj.member} {obj.season[0]}{obj.series}]({obj.image_url})" for obj in user1_only_details
-        ]
-        user2_field_data = [
-            f"[{obj.member} {obj.season[0]}{obj.series}]({obj.image_url})" for obj in user2_only_details
-        ]
-
-        # preparing pagination
+        # pagination
         items_per_page = 9
         total_pages = max(
-            (len(user1_field_data) + items_per_page - 1) // items_per_page,
-            (len(user2_field_data) + items_per_page - 1) // items_per_page,
+            (len(user1_only) + items_per_page - 1) // items_per_page,
+            (len(user2_only) + items_per_page - 1) // items_per_page,
         )
         current_page = 0
 
@@ -1372,11 +1472,15 @@ class EconomyPlugin(Plugin):
             start = page * items_per_page
             end = start + items_per_page
 
-            user1_page_data = user1_field_data[start:end]
-            user2_page_data = user2_field_data[start:end]
+            user1_page_data = user1_only[start:end]
+            user2_page_data = user2_only[start:end]
 
-            user1_field = "\n".join(user1_page_data)[:1024] or "None"
-            user2_field = "\n".join(user2_page_data)[:1024] or "None"
+            user1_field = "\n".join(
+                [f"**{obj[1]}** {obj[2][0]}{obj[4]} x{obj[7]}" for obj in user1_page_data]
+            ) or "None"
+            user2_field = "\n".join(
+                [f"**{obj[1]}** {obj[2][0]}{obj[4]} x{obj[7]}" for obj in user2_page_data]
+            ) or "None"
 
             embed = discord.Embed(
                 title="Inventory Comparison",
@@ -1387,36 +1491,46 @@ class EconomyPlugin(Plugin):
             embed.add_field(name=f"Objekts {user2.name} has but {user1.name} doesn't:", value=user2_field, inline=True)
             embed.set_footer(text=f"Page {page + 1}/{total_pages}")
             return embed
-        
+
         class PaginationView(View):
-            def __init__(self):
+            def __init__(self, user_id: int):
                 super().__init__()
                 self.current_page = 0
+                self.user_id = user_id
 
             async def update_embed(self, interaction: discord.Interaction):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                
                 embed = get_page_embed(self.current_page)
                 await interaction.response.edit_message(embed=embed, view=self)
-            
+
             @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
             async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
                 if self.current_page > 0:
                     self.current_page -= 1
                 elif self.current_page == 0:
                     self.current_page = total_pages - 1
                 await self.update_embed(interaction)
-                
-            
+
             @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
             async def next_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                
                 if self.current_page < total_pages - 1:
                     self.current_page += 1
                 elif self.current_page == total_pages - 1:
                     self.current_page = 0
                 await self.update_embed(interaction)
-        
-        # send the initial embed within the View
+            
         embed = get_page_embed(current_page)
-        view = PaginationView()
+        view = PaginationView(user_id=interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view)
 
     @app_commands.command(name="collection_percentage", description="View your collection completion percentage.")
@@ -1448,12 +1562,6 @@ class EconomyPlugin(Plugin):
         user_id = str(target.id)
         prefix = f"Your ({target})" if not user else f"{user}'s"
 
-        # only one filter at a time
-        active_filters = sum(bool(x) for x in [member, season, class_])
-        if active_filters > 1:
-            await interaction.response.send_message("You can only filter by one of `member`, `Season`, or `class` at a time.", ephemeral=True)
-            return
-
         # apply filters
         query = ObjektModel.all()
         if member:
@@ -1483,14 +1591,16 @@ class EconomyPlugin(Plugin):
         else:
             collection_percentage = (collected_count / total_count) * 100
         
+        title = f"{prefix} Collection"
+        
         if member:
-            title = f"{prefix} Collection ({member}):"
-        elif season:
-            title = f"{prefix} Collection ({season.name}):"
-        elif class_:
-            title = f"{prefix} Collection ({class_.name}):"
-        else:
-            title = f"{prefix} Collection:"
+            title += f" ({member})"
+        if season:
+            title += f" ({season.value})"
+        if class_:
+            title += f" ({class_.value})"
+        
+        title += ":"
 
         items_per_page = 9
         total_pages = max((len(collected) + items_per_page - 1) // items_per_page, (len(missing) + items_per_page - 1) // items_per_page)
@@ -1553,11 +1663,6 @@ class EconomyPlugin(Plugin):
                 elif self.current_page == total_pages - 1:
                     self.current_page = 0
                 await self.update_embed(interaction)
-            
-        embed = get_page_embed(current_page)
-        view = PaginationView()
-        await interaction.response.send_message(embed=embed, view=view)
-
 
         def group_by_season_and_class(objekts):
             grouped = {}
@@ -1598,8 +1703,10 @@ class EconomyPlugin(Plugin):
                 value="\n".join(missing_details) or "None",
                 inline=True
             )
-        
-        await interaction.response.send_message(embed=embed)
+
+        embed=get_page_embed(current_page)
+        view = PaginationView()
+        await interaction.response.send_message(embed=embed, view=view)
     
     @app_commands.command(name="leaderboard", description="View the leaderboard of users with the most collected objekts.")
     @app_commands.describe(
