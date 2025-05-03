@@ -679,13 +679,11 @@ class EconomyPlugin(Plugin):
                 response = requests.get(url, timeout=5)
                 response.raise_for_status()
                 img = Image.open(BytesIO(response.content))
-                if img.mode in ("RGBA", "P"):
+                if img.mode != "RGBA":
                     img = img.convert("RGBA")
-                    background = Image.new("RGB", img.size, (255, 255, 255))
-                    background.paste(img, mask=img.split()[3])
-                    img=background
-                else:
-                    img=img.convert("RGB")
+                    # background = Image.new("RGB", img.size, (255, 255, 255))
+                    # background.paste(img, mask=img.split()[3])
+                    # img=background
                 img.thumbnail(thumb_size)
                 return img
             except Exception as e:
@@ -698,12 +696,12 @@ class EconomyPlugin(Plugin):
         rows = (len(images) + images_per_row - 1) // images_per_row
         collage_width = thumb_size[0] * images_per_row
         collage_height = thumb_size[1] * rows
-        collage = Image.new('RGBA', (collage_width, collage_height), (255, 255, 255))
+        collage = Image.new('RGBA', (collage_width, collage_height), (255, 255, 255, 0))
 
         for index, img in enumerate(images):
             x = (index % images_per_row) * thumb_size[0]
             y = (index // images_per_row) * thumb_size[1]
-            collage.paste(img, (x, y))
+            collage.paste(img, (x, y), mask=img.split()[3])
         
         collage.save(filename, format='PNG')
         return filename
