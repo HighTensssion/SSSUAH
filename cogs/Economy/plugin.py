@@ -55,6 +55,15 @@ class EconomyPlugin(Plugin):
         cooldown = await CooldownModel.filter(user_id=user_id, command="daily").first()
         now = datetime.now(tz=timezone.utc)
 
+        cooldowns = {
+            "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
+            "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
+        }
+        reminders = []
+        for command, cd in cooldowns.items():
+            if not cd or cd.expires_at <= now:
+                reminders.append(command.capitalize())
+
         if cooldown and cooldown.expires_at > now:
             remaining = cooldown.expires_at - now
             minutes, seconds = divmod(remaining.total_seconds(), 60)
@@ -67,7 +76,7 @@ class EconomyPlugin(Plugin):
         
         # give como
         data = await self.get_user_data(id=user_id)
-        amount = random.randint(1, 100)
+        amount = random.randint(500, 2500)
         data.balance += amount
         await data.save()
 
@@ -83,6 +92,7 @@ class EconomyPlugin(Plugin):
         objekt = await ObjektModel.get(id=random_objekt_id)
 
         objekt = await ObjektModel.get(id=random_objekt_id)
+        
         if objekt.background_color:
             color = int(objekt.background_color.replace("#", ""), 16)
         else:
@@ -111,15 +121,26 @@ class EconomyPlugin(Plugin):
         )
         if objekt.image_url:
             embed.set_image(url=objekt.image_url)
+        if reminders:
+            embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
             
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="weekly", description="Claim 500 como and a rare objekt weekly.")
+    @app_commands.command(name="weekly", description="Claim 5000 como and a rare objekt weekly.")
     async def weekly_command(self, interaction: discord.Interaction):
         user_id = interaction.user.id
 
         cooldown = await CooldownModel.filter(user_id=user_id, command="weekly").first()
         now = datetime.now(tz=timezone.utc)
+
+        cooldowns = {
+            "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
+            "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
+        }
+        reminders = []
+        for command, cd in cooldowns.items():
+            if not cd or cd.expires_at <= now:
+                reminders.append(command.capitalize())
 
         if cooldown and cooldown.expires_at > now:
             remaining = cooldown.expires_at - now
@@ -134,7 +155,7 @@ class EconomyPlugin(Plugin):
         
         # give como
         data = await self.get_user_data(id=user_id)
-        como_amount = 500
+        como_amount = 5000
         data.balance += como_amount
         await data.save()
 
@@ -184,6 +205,9 @@ class EconomyPlugin(Plugin):
             )
             if objekt.image_url:
                 embed.set_image(url=objekt.image_url)
+            
+            if reminders:
+                embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
             
             await interaction.response.send_message(embed=embed)
 
@@ -407,6 +431,17 @@ class EconomyPlugin(Plugin):
         user_id = interaction.user.id
         banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
 
+        now = datetime.now(tz=timezone.utc)
+        cooldowns = {
+            "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
+            "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
+            "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
+        }
+        reminders = []
+        for command, cooldown in cooldowns.items():
+            if not cooldown or cooldown.expires_at <= now:
+                reminders.append(command.capitalize())
+
         # user's pity counter
         pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
 
@@ -459,8 +494,8 @@ class EconomyPlugin(Plugin):
         if pity_taken:
             # target reached
             embed = discord.Embed(
-                    title=f"Congratulations, {interaction.user}, after {pity_taken} spins, your chase ended!",
-                    color=color
+                title=f"Congratulations, {interaction.user}, after {pity_taken} spins, your chase ended!",
+                color=color
             )
             if card.image_url:
                 embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
@@ -469,6 +504,8 @@ class EconomyPlugin(Plugin):
                 f"Don't forget to set a new chase objekt with /set_chase!\n"
                 f"You earned {como_reward} como from this spin!"
             )
+            if reminders:
+                footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
             embed.set_footer(text=footer_text)
         else:
             embed = discord.Embed(
@@ -487,6 +524,8 @@ class EconomyPlugin(Plugin):
                 f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
                 f"You earned {como_reward} como from this spin!"
             )
+            if reminders:
+                footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
             embed.set_footer(text=footer_text)
             
         await interaction.response.send_message(embed=embed)
@@ -913,6 +952,15 @@ class EconomyPlugin(Plugin):
         cooldown = await CooldownModel.filter(user_id=user_id, command="rob").first()
         now = datetime.now(tz=timezone.utc)
 
+        cooldowns = {
+            "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
+            "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
+        }
+        reminders = []
+        for command, cd in cooldowns.items():
+            if not cd or cd.expires_at <= now:
+                reminders.append(command.capitalize())
+
         if cooldown and cooldown.expires_at > now:
             remaining = cooldown.expires_at - now
             minutes, seconds = divmod(remaining.total_seconds(), 60)
@@ -920,6 +968,17 @@ class EconomyPlugin(Plugin):
             await interaction.response.send_message(
                 f"You are on cooldown! Try again in {int(hours)}h {int(minutes)}m {int(seconds)}s.",
                 ephemeral=True
+            )
+            return
+        
+        if random.random() < 0.15:
+            user_data = await self.get_user_data(id=interaction.user.id)
+            loss_amount = random.randint(100, 200)
+            user_data.balance = max(0, user_data.balance - loss_amount)
+            await user_data.save()
+
+            await interaction.response.send_message(
+                f"{interaction.user.mention} attempted to rob {target.mention} but failed, losing **{loss_amount}** como in the process.\n{interaction.user} now has {user_data.balance} como left."
             )
             return
 
@@ -930,6 +989,16 @@ class EconomyPlugin(Plugin):
             return
         
         stolen_objekt = random.choice(target_inventory)
+
+        target_data = await self.get_user_data(id=target.id)
+        user_data = await self.get_user_data(id=interaction.user.id)
+        stolen_como = random.randint(50, 200)
+
+        if target_data.balance < stolen_como:
+            stolen_como = target_data.balance
+        
+        target_data.balance -= stolen_como
+        user_data.balance +=  stolen_como
 
         async with in_transaction():
             if stolen_objekt.copies > 1:
@@ -945,6 +1014,9 @@ class EconomyPlugin(Plugin):
                 await user_entry.save()
             else:
                 await CollectionModel.create(user_id=user_id, objekt=stolen_objekt.objekt, copies=1)
+            
+            await target_data.save()
+            await user_data.save()
         
         expires_at = now + timedelta(hours=6)
         if cooldown:
@@ -952,11 +1024,13 @@ class EconomyPlugin(Plugin):
             await cooldown.save()
         else:
             await CooldownModel.create(user_id=user_id, command="rob", expires_at=expires_at)
+        
+        response=f"{target.mention}, you have been robbed!\n{interaction.user} stole **{stolen_como} como** and {interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0]}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
+        
+        if reminders:
+            response += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
 
-        await interaction.response.send_message(
-            f"{target.mention}, you have been robbed!\n"
-            f"{interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0]}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
-        )
+        await interaction.response.send_message(content=response)
 
     @app_commands.command(name="send", description="Send an objekt to another user.")
     @app_commands.describe(
@@ -1122,8 +1196,6 @@ class EconomyPlugin(Plugin):
     async def refresh_shop(self):
         now = datetime.now(tz=timezone.utc)
         midnight = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
-            
-        await ShopModel.all().delete()
 
         users = await EconomyModel.all()
 
@@ -1139,6 +1211,9 @@ class EconomyPlugin(Plugin):
 
         for user in users:
             user_id = user.id
+
+            await ShopModel.filter(user_id=user_id).delete()
+
             items = []
             for _ in range(6):
                 rarity = random.choice(rarity_tiers)
@@ -1188,6 +1263,13 @@ class EconomyPlugin(Plugin):
             await interaction.response.send_message("Your shop is currently empty. Please wait for the next refresh!")
             return
         
+        now = datetime.now(tz=timezone.utc)
+        next_refresh = datetime.combine(now.date(), time.min, tzinfo=timezone.utc) + timedelta(days=1)
+        time_remaining = next_refresh - now
+        hours, remainder = divmod(time_remaining.total_seconds(), 3600)
+        minutes, _ = divmod(remainder, 60)
+        refresh_timer = f"{int(hours)}h {int(minutes)}m"
+        
         embed = discord.Embed(title=f"{interaction.user.name}'s Shop", color=0x000000)
         buttons = []
         for index, item in enumerate(shop_items):
@@ -1205,6 +1287,8 @@ class EconomyPlugin(Plugin):
             button = Button(label=f"Buy obj. {index + 1}", style=discord.ButtonStyle.blurple)
             button.callback = self.create_purchase_callback(item, interaction.user)
             buttons.append(button)
+        
+        embed.set_footer(text=f"Shop refreshes in: {refresh_timer}")
         
         view = View()
         for index, button in enumerate(buttons):
@@ -1535,7 +1619,8 @@ class EconomyPlugin(Plugin):
     @app_commands.describe(user="Indicate who's collection to view. (Leave blank to view your own)",
                            member="View your collection for a specific member.",
                            season="View your collection for a specifc season.",
-                           class_="View your collection for a specific class of objekts")
+                           class_="View your collection for a specific class of objekts",
+                           rarity="View your collection for a specific rarity of objekts")
     @app_commands.choices(
         season=[
             app_commands.Choice(name="atom", value="Atom01"),
@@ -1553,9 +1638,17 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="welcome", value="Welcome"),
             app_commands.Choice(name="zero", value="Zero"),
             app_commands.Choice(name="premier", value="Premier")
+        ],
+        rarity=[
+            app_commands.Choice(name="Common", value=1),
+            app_commands.Choice(name="Uncommon", value=2),
+            app_commands.Choice(name="Rare", value=3),
+            app_commands.Choice(name="Very Rare", value=4),
+            app_commands.Choice(name="Super Rare", value=5),
+            app_commands.Choice(name="Ultra Rare", value=6)
         ]
     )
-    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None):
+    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None):
         target = user or interaction.user
         user_id = str(target.id)
         prefix = f"Your ({target})" if not user else f"{user}'s"
@@ -1568,6 +1661,8 @@ class EconomyPlugin(Plugin):
             query = query.filter(season=season.value)
         if class_:
             query = query.filter(class_=class_.value)
+        if rarity:
+            query = query.filter(rarity=rarity.value)
         
         # fetch objekts based on filters
         total_objekts = await query.all()
@@ -1597,6 +1692,8 @@ class EconomyPlugin(Plugin):
             title += f" ({season.value})"
         if class_:
             title += f" ({class_.value})"
+        if rarity:
+            title += f" ({rarity.name})"
         
         title += ":"
 

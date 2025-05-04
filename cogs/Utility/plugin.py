@@ -96,6 +96,7 @@ class Utility(Plugin):
             app_commands.Choice(name="cream01", value="cream01"),
             app_commands.Choice(name="divine01", value="divine01"),
             app_commands.Choice(name="ever01", value="ever01"),
+            app_commands.Choice(name="atom02", value="atom02"),
             app_commands.Choice(name="customs", value="gndsg00")
         ]
     )
@@ -152,7 +153,7 @@ class Utility(Plugin):
             app_commands.Choice(name="customs", value="gndsg00")
         ]
     )
-    async def give_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
+    async def view_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
         objekt_slug = f"{season}-{member}-{series}".lower()
 
         # Fetch the objekt
