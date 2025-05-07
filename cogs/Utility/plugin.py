@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 import discord
+import os
 from PIL import Image
 import requests
 from io import BytesIO
@@ -12,11 +13,13 @@ from tortoise.transactions import in_transaction
 from core import Bot, Embed, CooldownModel, PityModel, ObjektModel, CollectionModel
 from discord import Interaction, app_commands
 from discord.ext.commands import is_owner
+from discord.ui import View, Button
 
 
 class Utility(Plugin):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+        self.cache = {}
 
     @app_commands.command(name='ping', description="Shows the bot's latency.")
     async def ping_command(self, interaction: Interaction):
@@ -202,7 +205,7 @@ class Utility(Plugin):
         # Send confirmation
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="view_series", description="View all objekts belonging to a specific series within a specific season.")
+    @app_commands.command(name="series_template", description="View all objekts belonging to a specific series within a specific season.")
     @app_commands.describe(
         season="The season of the series you wish to view.",
         series="The series of objekts you wish to view (ex. 309)."
@@ -211,7 +214,7 @@ class Utility(Plugin):
         season=[
             app_commands.Choice(name="atom01", value="atom1"),
             app_commands.Choice(name="binary01", value="binary01"),
-            app_commands.Choice(name="cream01", vacream01lue="cream01"),
+            app_commands.Choice(name="cream01", value="cream01"),
             app_commands.Choice(name="divine01", value="divine01"),
             app_commands.Choice(name="ever01", value="ever01"),
             app_commands.Choice(name="atom02", value="atom02"),
@@ -219,11 +222,45 @@ class Utility(Plugin):
         ]
     )
     async def view_gallery_command(self, interaction: discord.Interaction, season: str, series: str):
-        objekts = await ObjektModel.filter(season=season, series=series).order_by("member").all()
+        await interaction.response.defer()
+
+        objekts = await ObjektModel.filter(season__iexact=season, series=series).all()
 
         if not objekts:
-            await interaction.response.send_message("No objekts found for the specified season and series.", ephemeral=True)
+            await interaction.followup.send("No objekts found for the specified season and series.", ephemeral=True)
             return
+        
+        member_priority = {
+            "SeoYeon": 1, "Yeonajji": 1.1,
+            "HyeRin": 2, "Aekkeangie":  2.1,
+            "JiWoo": 3, "Rocketdan": 3.1,
+            "ChaeYeon": 4, "Chaengbokdan": 4.1,
+            "YooYeon": 5, "Yooenmi": 5.1,
+            "SooMin": 6, "Daramdan": 6.1,
+            "NaKyoung":7, "Nyangkidan": 7.1,
+            "YuBin": 8, "Bambamdan": 8.1,
+            "Kaede": 9, "Kaedan": 9.1,
+            "DaHyun": 10, "Sodadan": 10.1,
+            "Kotone": 11, "Coladan": 11.1,
+            "YeonJi": 12, "Quackquackdan": 12.1,
+            "Nien": 13, "Honeydan": 13.1,
+            "SoHyun": 14, "Nabills": 14.1,
+            "Xinyu": 15, "Shinandan": 15.1,
+            "Mayu": 16, "Cutiedan": 16.1,
+            "Lynn": 17, "Shamedan": 17.1,
+            "JooBin": 18, "Jjumeokkongdan": 18.1,
+            "HaYeon": 19, "Yukgakdan": 19.1,
+            "ShiOn": 20, "Babondan": 20.1,
+            "ChaeWon": 21, "Ddallangdan": 21.1,
+            "Sullin": 22, "Snowflakes": 22.1,
+            "SeoAh": 23, "Haessaldan": 23.1,
+            "JiYeon": 24, "Danggeundan": 24.1,
+        }
+
+        def custom_sort(objekt):
+            return member_priority.get(objekt.member, float('inf'))
+
+        objekts = sorted(objekts, key=custom_sort)
         
         num_objekts = len(objekts)
         if num_objekts == 1:
@@ -232,22 +269,64 @@ class Utility(Plugin):
             grid_size = (2, 2)
         elif num_objekts <= 8:
             grid_size = (4, 2)
+        elif num_objekts <= 10:
+            grid_size = (5, 2)
+        elif num_objekts <= 12:
+            grid_size = (4, 3)
+        elif num_objekts <= 16:
+            grid_size = (4, 4)
+        elif num_objekts <= 20:
+            grid_size = (5, 4)
         else:
-            grid_size = (4,6)
+            grid_size = (6, 4)
+
+        if objekts and objekts[0].background_color:
+            color = int(objekts[0].background_color.replace("#", ""), 16)
+        else:
+            color = 0xFF69B4
         
         items_per_page = grid_size[0] * grid_size[1]
         total_pages = (num_objekts + items_per_page - 1) // items_per_page
         current_page = 0
 
         def create_collage_for_page(page):
+            base_dir = "collage"
+            series_dir = os.path.join(base_dir, "series")
+
+            os.makedirs(series_dir, exist_ok=True)
+
+            filename = os.path.join(series_dir, f"collage_{season[0] * int(season[-1])}_{series}_page_{page}.png")
+
+            cache_key = f"{season}_{series}_page_{page}"
+            if cache_key in self.cache:
+                return self.cache[cache_key]
+            
             start = page * items_per_page
             end = start + items_per_page
             page_objekts = objekts[start:end]
 
-            thumb_size = (200 // grid_size[0], 300 // grid_size[1])
-            collage_width = thumb_size[0] * grid_size[0]
-            collage_height= thumb_size[1] * grid_size[1]
-            collage = Image.new('RGBA', (collage_width, collage_height), (255, 255, 255, 0))
+            thumb_size = (200, 300)
+            gap = 10
+            edge_padding = 20
+
+            collage_width = (thumb_size[0] + gap) * grid_size[0] - gap + 2 * edge_padding
+            collage_height= (thumb_size[1] + gap) * grid_size[1] - gap + 2 * edge_padding
+
+            if page_objekts and page_objekts[0].background_color:
+                base_color = int(page_objekts[0].background_color.replace("#", ""), 16)
+                original_r = (base_color >> 16) & 0xFF
+                original_g = (base_color >> 8) & 0xFF
+                original_b = base_color & 0xFF
+
+                r = int(original_r * 0.8)
+                g = int(original_g * 0.8)
+                b = int(original_b * 0.8)
+
+                background_color = (r, g, b, 255)
+            else:
+                background_color = (255, 255, 255, 255)
+
+            collage = Image.new('RGBA', (collage_width, collage_height), background_color)
 
             for index, objekt in enumerate(page_objekts):
                 try:
@@ -255,33 +334,36 @@ class Utility(Plugin):
                     response.raise_for_status()
                     img = Image.open(BytesIO(response.content))
                     img.thumbnail(thumb_size)
-                    x = (index % grid_size[0]) * thumb_size[0]
-                    y = (index // grid_size[0]) * thumb_size[1]
+
+                    x = edge_padding + (index % grid_size[0]) * (thumb_size[0] + gap)
+                    y = edge_padding + (index // grid_size[0]) * (thumb_size[1] + gap)
                     collage.paste(img, (x, y))
                 except Exception as e:
                     print(f"Error loading image from {objekt.image_url}: {e}")
             
-            filename = f"collage_{season[0] * int(season[-1])}_{series}_page_{page}.png"
             collage.save(filename, format='PNG')
 
-            description = ", ".join(
-                [f"**{objekt.memeber}** {objekt.season[0] * int(objekt.season[-1])}{objekt.series}" for objekt in page_objekts]
+            names = [f"**{objekt.member}**" for objekt in page_objekts]
+            description = "\n".join(
+                [", ".join(names[i:i + grid_size[0]]) for i in range(0, len(names), grid_size[0])]
             )
             
+            self.cache[cache_key] = (filename, description)
             return filename, description
         
         class PaginationView(View):
-            def __init__(self):
+            def __init__(self, color):
                 super().__init__()
                 self.current_page = 0
+                self.color = color
             
             async def update_embed(self, interaction: discord.Interaction):
                 filename, description = create_collage_for_page(self.current_page)
                 file = discord.File(filename, filename="gallery.png")
                 embed = discord.Embed(
-                    title=f"tripleS {season[0] * int(season[-1])}{series}",
+                    title=f"tripleS {season[0].capitalize() * int(season[-1])}{series}",
                     description=description,
-                    color=0x00FF00
+                    color=self.color
                 )
                 embed.set_image(url="attachment://gallery.png")
                 embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
@@ -306,17 +388,14 @@ class Utility(Plugin):
         filename, description = create_collage_for_page(current_page)
         file = discord.File(filename, filename="gallery.png")
         embed = discord.Embed(
-            title=f"tripleS {season[0] * int(season[-1])}{series}",
+            title=f"tripleS {season[0].capitalize() * int(season[-1])}{series}",
             description=description,
-            color=0x00FF00
+            color=color
         )
         embed.set_image(url="attachment://gallery.png")
-        embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
-        view = PaginationView()
-        await interaction.response.send_message(embed=embed, view=view, file=file)
+        embed.set_footer(text=f"Page {current_page + 1}/{total_pages}")
+        view = PaginationView(color=color)
+        await interaction.followup.send(embed=embed, view=view, file=file)
 
-         
-
-    
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Utility(bot))
