@@ -29,13 +29,15 @@ class Utility(Plugin):
     
     @app_commands.command(name="cooldowns", description="Check your current cooldowns.")
     async def cooldowns_command(self, interaction: Interaction):
+        await interaction.response.defer()
+
         user_id = str(interaction.user.id)
 
         # fetch cds
         cooldowns = await CooldownModel.filter(user_id=user_id).all()
 
         if not cooldowns:
-            await interaction.response.send_message("You currently have no active cooldowns.", ephemeral=True)
+            await interaction.followup.send("You currently have no active cooldowns.", ephemeral=True)
             return
 
         embed = Embed(
@@ -65,17 +67,19 @@ class Utility(Plugin):
                 inline=False
             )
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="chase_check", description="Check your current chase objekt.")
     async def chase_command(self, interaction: Interaction):
+        await interaction.response.defer()
+
         user_id = str(interaction.user.id)
 
         # fetch chase objekt
         chase_objekt_data = await PityModel.filter(user_id=user_id).first()
 
         if not chase_objekt_data:
-            await interaction.response.send_message ("You currently have no chase objekt set.", ephemeral=True)
+            await interaction.followup.send("You currently have no chase objekt set.", ephemeral=True)
             return
         
         chase_objekt = await ObjektModel.filter(slug=chase_objekt_data.chase_objekt_slug).first()
@@ -87,7 +91,7 @@ class Utility(Plugin):
         )
         embed.set_image(url=chase_objekt.image_url)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="give", description="(Admin Only) Give a specific objekt to a user.")
     @app_commands.describe(
@@ -108,8 +112,10 @@ class Utility(Plugin):
         ]
     )
     async def give_command(self, interaction: discord.Interaction, user: discord.User, season: str, member: str, series: str):
+        await interaction.response.defer()
+
         if not (await self.bot.is_owner(interaction.user) or interaction.user.guild_permissions.administrator):
-            await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+            await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
             return
         
         user_id = str(user.id)
@@ -118,7 +124,7 @@ class Utility(Plugin):
         # Fetch the objekt
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
         if not objekt:
-            await interaction.response.send_message("The specified objekt does not exist!", ephemeral=True)
+            await interaction.followup.send("The specified objekt does not exist!", ephemeral=True)
             return
 
         # Add the objekt to the user's inventory
@@ -144,7 +150,7 @@ class Utility(Plugin):
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation
-        await interaction.response.send_message(content=f"**{interaction.user}** has given **{user.mention}** the objekt:\n", embed=embed)
+        await interaction.followup.send(content=f"**{interaction.user}** has given **{user.mention}** the objekt:\n", embed=embed)
     
     @app_commands.command(name="view", description="View a specific objekt.")
     @app_commands.describe(
