@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import discord
 import os
 import sys
@@ -55,16 +56,24 @@ class Bot(commands.AutoShardedBot):
         self.add_command(reload)
 
     async def on_ready(self) -> None:
-        log.info(f"Logged in as {self.user} (ID: {self.user.id})")
+        log.info(f"Locgged in as {self.user} (ID: {self.user.id})")
+        for guild in self.guilds:
+            log.info(f"{guild.name} ({guild.id})")
+
+        for guild in self.guilds:
+            if guild.id != ALLOWED_GUILD_ID:
+                log.info(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
+                await guild.leave()
+                await asyncio.sleep(1)
     
     async def on_guild_join(self, guild: discord.Guild):
         if guild.id != ALLOWED_GUILD_ID:
-                print(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
+                log.info(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
                 await guild.leave()
     
     async def on_guild_available(self, guild: discord.Guild):
         if guild.id != ALLOWED_GUILD_ID:
-                print(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
+                log.info(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
                 await guild.leave()
 
     
