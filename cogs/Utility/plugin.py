@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Optional
 
 import discord
+from PIL import Image
+import requests
+from io import BytesIO
 from .. import Plugin
 from datetime import datetime, timezone
 from tortoise.transactions import in_transaction
@@ -198,6 +201,121 @@ class Utility(Plugin):
 
         # Send confirmation
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="view_series", description="View all objekts belonging to a specific series within a specific season.")
+    @app_commands.describe(
+        season="The season of the series you wish to view.",
+        series="The series of objekts you wish to view (ex. 309)."
+    )
+    @app_commands.choices(
+        season=[
+            app_commands.Choice(name="atom01", value="atom1"),
+            app_commands.Choice(name="binary01", value="binary01"),
+            app_commands.Choice(name="cream01", vacream01lue="cream01"),
+            app_commands.Choice(name="divine01", value="divine01"),
+            app_commands.Choice(name="ever01", value="ever01"),
+            app_commands.Choice(name="atom02", value="atom02"),
+            app_commands.Choice(name="customs", value="gndsg01")
+        ]
+    )
+    async def view_gallery_command(self, interaction: discord.Interaction, season: str, series: str):
+        objekts = await ObjektModel.filter(season=season, series=series).order_by("member").all()
+
+        if not objekts:
+            await interaction.response.send_message("No objekts found for the specified season and series.", ephemeral=True)
+            return
+        
+        num_objekts = len(objekts)
+        if num_objekts == 1:
+            grid_size = (1, 1)
+        elif num_objekts <= 4:
+            grid_size = (2, 2)
+        elif num_objekts <= 8:
+            grid_size = (4, 2)
+        else:
+            grid_size = (4,6)
+        
+        items_per_page = grid_size[0] * grid_size[1]
+        total_pages = (num_objekts + items_per_page - 1) // items_per_page
+        current_page = 0
+
+        def create_collage_for_page(page):
+            start = page * items_per_page
+            end = start + items_per_page
+            page_objekts = objekts[start:end]
+
+            thumb_size = (200 // grid_size[0], 300 // grid_size[1])
+            collage_width = thumb_size[0] * grid_size[0]
+            collage_height= thumb_size[1] * grid_size[1]
+            collage = Image.new('RGBA', (collage_width, collage_height), (255, 255, 255, 0))
+
+            for index, objekt in enumerate(page_objekts):
+                try:
+                    response = requests.get (objekt.image_url, timeout=5)
+                    response.raise_for_status()
+                    img = Image.open(BytesIO(response.content))
+                    img.thumbnail(thumb_size)
+                    x = (index % grid_size[0]) * thumb_size[0]
+                    y = (index // grid_size[0]) * thumb_size[1]
+                    collage.paste(img, (x, y))
+                except Exception as e:
+                    print(f"Error loading image from {objekt.image_url}: {e}")
+            
+            filename = f"collage_{season[0] * int(season[-1])}_{series}_page_{page}.png"
+            collage.save(filename, format='PNG')
+
+            description = ", ".join(
+                [f"**{objekt.memeber}** {objekt.season[0] * int(objekt.season[-1])}{objekt.series}" for objekt in page_objekts]
+            )
+            
+            return filename, description
+        
+        class PaginationView(View):
+            def __init__(self):
+                super().__init__()
+                self.current_page = 0
+            
+            async def update_embed(self, interaction: discord.Interaction):
+                filename, description = create_collage_for_page(self.current_page)
+                file = discord.File(filename, filename="gallery.png")
+                embed = discord.Embed(
+                    title=f"tripleS {season[0] * int(season[-1])}{series}",
+                    description=description,
+                    color=0x00FF00
+                )
+                embed.set_image(url="attachment://gallery.png")
+                embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
+                await interaction.response.edit_message(embed=embed, view=self, attachments=[file])
+            
+            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page > 0:
+                    self.current_page -= 1
+                elif self.current_page == 0:
+                    self.current_page = total_pages - 1
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if self.current_page < total_pages - 1:
+                    self.current_page += 1
+                elif self.current_page == total_pages - 1:
+                    self.current_page = 0
+                await self.update_embed(interaction)
+
+        filename, description = create_collage_for_page(current_page)
+        file = discord.File(filename, filename="gallery.png")
+        embed = discord.Embed(
+            title=f"tripleS {season[0] * int(season[-1])}{series}",
+            description=description,
+            color=0x00FF00
+        )
+        embed.set_image(url="attachment://gallery.png")
+        embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
+        view = PaginationView()
+        await interaction.response.send_message(embed=embed, view=view, file=file)
+
+         
 
     
 async def setup(bot: Bot) -> None:
