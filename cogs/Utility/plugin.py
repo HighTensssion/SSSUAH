@@ -165,6 +165,8 @@ class Utility(Plugin):
         ]
     )
     async def view_command(self, interaction: discord.Interaction, season: str, member: str, series: str, verbose: bool | None = False):
+        await interaction.response.defer()
+
         objekt_slug = f"{season}-{member}-{series}".lower()
 
         rarity_mapping = {
@@ -177,12 +179,10 @@ class Utility(Plugin):
             7: "Uncommon"
         }
 
-        
-
         # Fetch the objekt
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
         if not objekt:
-            await interaction.response.send_message("The specified objekt does not exist!", ephemeral=True)
+            await interaction.followup.send("The specified objekt does not exist!", ephemeral=True)
             return
 
         # Prepare the embed
@@ -207,7 +207,7 @@ class Utility(Plugin):
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="series_template", description="View all objekts belonging to a specific series within a specific season.")
     @app_commands.describe(
