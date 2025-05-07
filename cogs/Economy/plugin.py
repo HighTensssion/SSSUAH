@@ -398,6 +398,7 @@ class EconomyPlugin(Plugin):
             await interaction.response.send_message(
                 f"You already are chasing **{current_chase_name}**! "
                 f"Changing your chase objekt will reset your pity. Do you wish to proceed?",
+                ephemeral=True,
                 view=view
             )
             await view.wait()

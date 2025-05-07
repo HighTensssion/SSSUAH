@@ -102,13 +102,15 @@ class Utility(Plugin):
     )
     @is_owner()
     async def give_command(self, interaction: discord.Interaction, user: discord.User, season: str, member: str, series: str):
+        interaction.response.defer()
+
         user_id = str(user.id)
         objekt_slug = f"{season}-{member}-{series}".lower()
 
         # Fetch the objekt
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
         if not objekt:
-            await interaction.response.send_message("The specified objekt does not exist!", ephemeral=True)
+            await interaction.followup.send("The specified objekt does not exist!", ephemeral=True)
             return
 
         # Add the objekt to the user's inventory
@@ -128,14 +130,13 @@ class Utility(Plugin):
 
         embed = discord.Embed(
             title="Objekt Given!",
-            description=f"**{interaction.user}** has given **{user.mention}** the objekt:\n"
-                        f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
+            description=f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
             color=color
         )
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(content=f"**{interaction.user}** has given **{user.mention}** the objekt:\n", embed=embed)
     
     @app_commands.command(name="view", description="View a specific objekt.")
     @app_commands.describe(
@@ -156,6 +157,8 @@ class Utility(Plugin):
         ]
     )
     async def view_command(self, interaction: discord.Interaction, season: str, member: str, series: str, verbose: bool | None = False):
+        interaction.response.defer()
+
         objekt_slug = f"{season}-{member}-{series}".lower()
 
         rarity_mapping = {
@@ -173,7 +176,7 @@ class Utility(Plugin):
         # Fetch the objekt
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
         if not objekt:
-            await interaction.response.send_message("The specified objekt does not exist!", ephemeral=True)
+            await interaction.followup.send("The specified objekt does not exist!", ephemeral=True)
             return
 
         # Prepare the embed
@@ -198,7 +201,7 @@ class Utility(Plugin):
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     
 async def setup(bot: Bot) -> None:
