@@ -51,6 +51,7 @@ class EconomyPlugin(Plugin):
     
     @app_commands.command(name="daily", description="Claim a random amount of como daily.")
     async def daily_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         user_id = interaction.user.id
 
         cooldown = await CooldownModel.filter(user_id=user_id, command="daily").first()
@@ -69,7 +70,7 @@ class EconomyPlugin(Plugin):
             remaining = cooldown.expires_at - now
             minutes, seconds = divmod(remaining.total_seconds(), 60)
             hours, minutes = divmod(minutes, 60)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"You are on cooldown! Try again in {int(hours)}h{int(minutes)}m.",
                 ephemeral=True
             )
@@ -86,7 +87,7 @@ class EconomyPlugin(Plugin):
         objekt_ids = await ObjektModel.filter(rarity=rarity).values_list("id", flat=True)
 
         if not objekt_ids:
-            await interaction.response.send_message(f"You received **{amount}** como but no objekts of rarity {rarity} are available in the database.", ephemeral=True)
+            await interaction.followup.send(f"You received **{amount}** como but no objekts of rarity {rarity} are available in the database.", ephemeral=True)
             return
     
         random_objekt_id = random.choice(objekt_ids)
@@ -125,10 +126,11 @@ class EconomyPlugin(Plugin):
         if reminders:
             embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
             
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="weekly", description="Claim 5000 como and a rare objekt weekly.")
     async def weekly_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         user_id = interaction.user.id
 
         cooldown = await CooldownModel.filter(user_id=user_id, command="weekly").first()
@@ -148,7 +150,7 @@ class EconomyPlugin(Plugin):
             minutes, seconds = divmod(remaining.total_seconds(), 60)
             hours, minutes = divmod(minutes, 60)
             days, hours = divmod(hours, 24)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"You are on cooldown! Try again in {int(days)}d {int(hours)}h {int(minutes)}m.",
                 ephemeral=True
             )
@@ -168,7 +170,7 @@ class EconomyPlugin(Plugin):
         objekt_ids = await ObjektModel.filter(rarity=chosen_rarity).values_list("id", flat=True)
 
         if not objekt_ids:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"You received **{como_amount} como**, but no objekts of rarity {chosen_rarity} are available in the database.",
                 ephemeral=True
             )
@@ -210,7 +212,7 @@ class EconomyPlugin(Plugin):
             if reminders:
                 embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
             
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     async def rarity_choice(self, rarity, weights):
         if not rarity:
@@ -359,13 +361,15 @@ class EconomyPlugin(Plugin):
         ]
     )
     async def set_chase_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
+        await interaction.response.defer()
+
         user_id = str(interaction.user.id)
         objekt_slug = f"{season}-{member}-{series}".lower()
 
         # validate slug
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
         if not objekt:
-            await interaction.response.send_message("The specified objekt slug does not exist!", ephemeral=True)
+            await interaction.followup.send("The specified objekt slug does not exist!", ephemeral=True)
             return
         
         # get or create the user's pity entry
@@ -412,7 +416,7 @@ class EconomyPlugin(Plugin):
         pity_entry.chase_pity_count = 0
         await pity_entry.save()
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Your chase objekt has been set to **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!"
         )
     
