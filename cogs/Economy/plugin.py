@@ -1641,10 +1641,11 @@ class EconomyPlugin(Plugin):
 
     @app_commands.command(name="collection_percentage", description="View your collection completion percentage.")
     @app_commands.describe(user="Indicate who's collection to view. (Leave blank to view your own)",
-                           member="View your collection for a specific member.",
+                           member="View your collection for a specific member. (Cannot be used in conjunction with series filter)",
                            season="View your collection for a specifc season.",
                            class_="View your collection for a specific class of objekts",
-                           rarity="View your collection for a specific rarity of objekts")
+                           rarity="View your collection for a specific rarity of objekts",
+                           series="View your collection for a specific series of objekts (Requires season filter.)")
     @app_commands.choices(
         season=[
             app_commands.Choice(name="atom01", value="Atom01"),
@@ -1673,10 +1674,20 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="Ultra Rare", value=6)
         ]
     )
-    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None):
+    async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None, series: str | None = None):
+        await interaction.response.defer()
+
         target = user or interaction.user
         user_id = str(target.id)
         prefix = f"Your ({target})" if not user else f"{user}'s"
+
+        if member and series:
+            await interaction.followup.send("You cannot filter by both `member` and `series` at the same time. Please choose one.", ephemeral=True)
+            return
+        
+        if series and not season:
+            await interaction.followup.send("Filtering by `series` requires specifying the `season` as well.", ephemeral=True)
+            return
 
         # apply filters
         query = ObjektModel.all()
@@ -1688,10 +1699,11 @@ class EconomyPlugin(Plugin):
             query = query.filter(class_=class_.value)
         if rarity:
             query = query.filter(rarity=rarity.value)
+        if series:
+            query = query.filter(series=series)
         
         # fetch objekts based on filters
         total_objekts = await query.all()
-
         total_objekt_ids = [objekt.id for objekt in total_objekts]
 
         # feth user's filtered collected objekts
@@ -1704,7 +1716,7 @@ class EconomyPlugin(Plugin):
 
         total_count = len(total_objekts)
         collected_count = len(collected)
-        if total_objekts == 0:
+        if total_count == 0:
             collection_percentage = 0
         else:
             collection_percentage = (collected_count / total_count) * 100
@@ -1719,6 +1731,8 @@ class EconomyPlugin(Plugin):
             title += f" ({class_.value})"
         if rarity:
             title += f" ({rarity.name})"
+        if series:
+            title += f" ({series})"
         
         title += ":"
 
@@ -1746,9 +1760,9 @@ class EconomyPlugin(Plugin):
                 color=0x008800
             )
             embed.add_field(
-            name="Collected",
-            value="\n".join(collected_details) or "None",
-            inline=True
+                name="Collected",
+                value="\n".join(collected_details) or "None",
+                inline=True
             )
             embed.add_field(
                 name="Missing",
@@ -1826,89 +1840,7 @@ class EconomyPlugin(Plugin):
 
         embed=get_page_embed(current_page)
         view = PaginationView()
-        await interaction.response.send_message(embed=embed, view=view)
-    
-    @app_commands.command(name="leaderboard", description="View the leaderboard of users with the most collected objekts.")
-    @app_commands.describe(
-        member="Filter the leaderboard by a specific member.",
-        season="Filter the leaderboard by a specific season.",
-        mode="Toggle between percent complete or total copies owned."
-    )
-    @app_commands.choices(
-        mode=[
-            app_commands.Choice(name="Percent Complete", value="percent"),
-            app_commands.Choice(name="Copies Owned", value="copies")
-        ],
-        season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ]
-    )
-    async def leaderboard_command(self, interaction: discord.Interaction, member: str | None = None, season: app_commands.Choice[str] | None = None, mode: app_commands.Choice[str] = None):
-        await interaction.response.defer()
-
-        active_filters = sum(bool(x) for x in [member, season])
-        if active_filters > 1:
-            await interaction.followup.send("You can only filter by one of `member` or `season` at a time.", ephemeral=True)
-            return
-        
-        query = ObjektModel.all()
-        if member:
-            query = query.filter(member__iexact=member)
-        if season:
-            query = query.filter(season=season.value)
-        
-        total_objekts = await query.all()
-        total_objekts_ids = [objekt.id for objekt in total_objekts]
-
-        users = await EconomyModel.all()
-        leaderboard_data = []
-
-        for user in users:
-            user_id = str(user.id)
-            discord_user = await self.bot.fetch_user(user_id)
-            user_name = discord_user.name if discord_user else "Unknown User"
-
-            collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekts_ids).prefetch_related("objekt")
-
-            if mode and mode.value == "copies":
-                total_copies = sum(entry.copies for entry in collected_objekts)
-                leaderboard_data.append((user_id, user_name, total_copies))
-            else:
-                collected_ids = {entry.objekt.id for entry in collected_objekts}
-                collected_count = len(collected_ids)
-                total_count = len(total_objekts)
-                percent_complete = (collected_count / total_count) * 100 if total_count > 0 else 0
-                leaderboard_data.append((user_id, user_name, percent_complete, collected_count, total_count))
-        
-        leaderboard_data.sort(key=lambda x: x[2], reverse=True)
-
-        embed_title = "GNDSG Slur Gacha Leaderboard"
-        if mode and mode.value == "copies":
-            embed_title += f" by Copies"
-        else:
-            embed_title += f" by Percent Complete"
-        if member:
-            embed_title += f" ({member}):"
-        elif season:
-            embed_title += f" ({season.value}):"
-        
-        embed = discord.Embed(title=embed_title, color=0xFFD700)
-
-        for rank, entry in enumerate(leaderboard_data[:10], start=1):
-            if mode and mode.value == "copies":
-                user_id, user_name, total_copies = entry
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies}** copies held", inline=False)
-            else:
-                user_id, user_name, percent_complete, collected_count, total_count = entry
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count}/{total_count})** | **{percent_complete:.2f}%** complete", inline=False)
-        
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot: Bot): 
     await bot.add_cog(EconomyPlugin(bot))
