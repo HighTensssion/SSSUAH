@@ -1675,19 +1675,19 @@ class EconomyPlugin(Plugin):
         ]
     )
     async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None, series: str | None = None):
-        await interaction.response.defer()
-
         target = user or interaction.user
         user_id = str(target.id)
         prefix = f"Your ({target})" if not user else f"{user}'s"
 
         if member and series:
-            await interaction.followup.send("You cannot filter by both `member` and `series` at the same time. Please choose one.", ephemeral=True)
+            await interaction.response.send_message("You cannot filter by both `member` and `series` at the same time. Please choose one.", ephemeral=True)
             return
         
         if series and not season:
-            await interaction.followup.send("Filtering by `series` requires specifying the `season` as well.", ephemeral=True)
+            await interaction.response.send_message("Filtering by `series` requires specifying the `season` as well.", ephemeral=True)
             return
+        
+        await interaction.response.defer()
 
         # apply filters
         query = ObjektModel.all()
