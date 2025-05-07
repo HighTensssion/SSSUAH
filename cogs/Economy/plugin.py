@@ -1099,8 +1099,11 @@ class EconomyPlugin(Plugin):
                 await recipient_entry.save()
             else:
                 await CollectionModel.create(user_id=recipient_id, objekt_id=objekt.id, copies=1)
+
+        await interaction.response.defer()
             
         objekt = await ObjektModel.get(season=season, member__iexact=member, series=series)
+        confirmation_message = f"{interaction.user.mention} successfully sent **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}** to {recipient.mention}!"
 
         if objekt:
             if objekt.background_color:
@@ -1115,13 +1118,9 @@ class EconomyPlugin(Plugin):
             )
             embed.set_image(url=objekt.image_url)
 
-            await interaction.response.send_message(embed=embed)
-
-            await interaction.followup.send(
-                f"{interaction.user.mention} successfully sent **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}** to {recipient.mention}!"
-            )
+            await interaction.followup.send(content=confirmation_message, embed=embed)
         else:
-            await interaction.response.send_message("No objekts found in the database.")
+            await interaction.followup.send("No objekts found in the database.")
     
     def create_sell_callback(self, user_id: str, rarity: int, leave: int):
         async def callback(interaction: discord.Interaction):
