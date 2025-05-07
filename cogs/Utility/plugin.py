@@ -22,6 +22,12 @@ class Utility(Plugin):
         self.bot = bot
         self.cache = {}
 
+    async def get_user_data(self, id: int) -> EconomyModel:
+        try:
+            return await EconomyModel.get(pk=id)
+        except DoesNotExist:
+            return await EconomyModel.create(id=id)
+
     @app_commands.command(name='ping', description="Shows the bot's latency.")
     async def ping_command(self, interaction: Interaction):
         embed = Embed(description=f"My ping is {round(self.bot.latency*1000)}ms")
