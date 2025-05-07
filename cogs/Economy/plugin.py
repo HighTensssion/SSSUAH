@@ -1315,18 +1315,20 @@ class EconomyPlugin(Plugin):
     )
     @app_commands.checks.cooldown(1, 10, key=lambda i: (i.user.id,))
     async def slots_command(self, interaction: discord.Interaction, bet: int):
+        await interaction.response.defer()
+
         user_id = interaction.user.id
 
         # check valid bet
         if bet <= 0:
-            await interaction.response.send_message("Your bet must be greater than 0!", ephemeral=True)
+            await interaction.followup.send("Your bet must be greater than 0!", ephemeral=True)
             return
         
         user_data = await self.get_user_data(id=user_id)
 
         # check bet vs balance
         if user_data.balance < bet:
-            await interaction.response.send_message("you don't have enough como to place this bet!", ephemeral=True)
+            await interaction.followup.send("You don't have enough como to place this bet!", ephemeral=True)
             return
         
         user_data.balance -= bet
@@ -1362,27 +1364,32 @@ class EconomyPlugin(Plugin):
         user_data.balance += payout
         await user_data.save()
 
+        if bet > 0:
+            payout_ratio = payout // bet if bet > 0 else 0
+        else:
+            payout_ratio = 0
+
         # slots display
         slot_display = f"🎰 **SLOTS** 🎰\n| {reel_1} | {reel_2} | {reel_3} |\n"
 
-        if payout / bet == 3:
+        if payout_ratio == 3:
             result_message = f"🎉Win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
-        elif payout / bet == 4:
+        elif payout_ratio == 4:
             result_message = f"🎉 Small win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
-        elif payout / bet == 5:
+        elif payout_ratio == 5:
             result_message = f"🎉 Big win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
-        elif payout / bet == 6:
+        elif payout_ratio == 6:
             result_message = f"🎉 Huge win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
-        elif payout / bet == 7:
+        elif payout_ratio == 7:
             result_message = f"🎉 Tremendous win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
-        elif payout / bet == 10:
+        elif payout_ratio == 10:
             result_message = f"🎉 JACKPOT!!! {interaction.user.mention} bet {bet} como and wins **{payout} como**!!! 🎉\n {interaction.user} now has {user_data.balance} como."
-        elif payout / bet == 2:
+        elif payout_ratio == 2:
             result_message = f"🎉 {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
         else: 
             result_message = f"😢 {interaction.user.mention} bet {bet} como and lost, leaving them with {user_data.balance} como... Better luck next time..."
         
-        await interaction.response.send_message(f"{slot_display}\n\n{result_message}")
+        await interaction.followup.send(f"{slot_display}\n\n{result_message}")
     
     @slots_command.error
     async def slots_error(self, interaction: discord.Interaction, error):
@@ -1492,8 +1499,8 @@ class EconomyPlugin(Plugin):
             query1 = query1.filter(objekt__member__iexact=filter_by_member)
             query2 = query2.filter(objekt__member__iexact=filter_by_member)
         if filter_by_season:
-            query1 = query1.filter(objekt__season=filter_by_season.value)
-            query2 = query2.filter(objekt__season=filter_by_season.value)
+            query1 = query1.filter(objekt__season__iexact=filter_by_season.value)
+            query2 = query2.filter(objekt__season__iexact=filter_by_season.value)
         if filter_by_class:
             query1 = query1.filter(objekt__class_=filter_by_class.value)
             query2 = query2.filter(objekt__class_=filter_by_class.value)
@@ -1571,10 +1578,10 @@ class EconomyPlugin(Plugin):
             user2_page_data = user2_only[start:end]
 
             user1_field = "\n".join(
-                [f"**{obj[1]}** {obj[2][0]}{obj[4]} x{obj[7]}" for obj in user1_page_data]
+                [f"**{obj[1]}** {obj[2][0] * int(obj[2][-1])}{obj[4]} x{obj[7]}" for obj in user1_page_data]
             ) or "None"
             user2_field = "\n".join(
-                [f"**{obj[1]}** {obj[2][0]}{obj[4]} x{obj[7]}" for obj in user2_page_data]
+                [f"**{obj[1]}** {obj[2][0] * int(obj[2][-1])}{obj[4]} x{obj[7]}" for obj in user2_page_data]
             ) or "None"
 
             embed = discord.Embed(

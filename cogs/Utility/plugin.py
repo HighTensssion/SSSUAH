@@ -6,11 +6,12 @@ import discord
 import os
 from PIL import Image
 import requests
+import aiohttp
 from io import BytesIO
 from .. import Plugin
 from datetime import datetime, timezone
 from tortoise.transactions import in_transaction
-from core import Bot, Embed, CooldownModel, PityModel, ObjektModel, CollectionModel
+from core import Bot, Embed, CooldownModel, PityModel, ObjektModel, CollectionModel, EconomyModel
 from discord import Interaction, app_commands
 from discord.ext.commands import is_owner
 from discord.ui import View, Button
@@ -106,8 +107,11 @@ class Utility(Plugin):
             app_commands.Choice(name="customs", value="gndsg00")
         ]
     )
-    @is_owner()
     async def give_command(self, interaction: discord.Interaction, user: discord.User, season: str, member: str, series: str):
+        if not (await self.bot.is_owner(interaction.user) or interaction.user.guild_permissions.administrator):
+            await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+            return
+        
         user_id = str(user.id)
         objekt_slug = f"{season}-{member}-{series}".lower()
 
@@ -289,7 +293,7 @@ class Utility(Plugin):
         total_pages = (num_objekts + items_per_page - 1) // items_per_page
         current_page = 0
 
-        def create_collage_for_page(page):
+        async def create_collage_for_page(page):
             base_dir = "collage"
             series_dir = os.path.join(base_dir, "series")
 
@@ -328,19 +332,21 @@ class Utility(Plugin):
 
             collage = Image.new('RGBA', (collage_width, collage_height), background_color)
 
-            for index, objekt in enumerate(page_objekts):
-                try:
-                    response = requests.get (objekt.image_url, timeout=5)
-                    response.raise_for_status()
-                    img = Image.open(BytesIO(response.content))
-                    img.thumbnail(thumb_size)
+            async with aiohttp.ClientSession() as session:
+                for index, objekt in enumerate(page_objekts):
+                    try:
+                        async with session.get(objekt.image_url, timeout=10) as response:
+                            response.raise_for_status()
+                            img_data = await response.read()
+                            img = Image.open(BytesIO(img_data))
+                            img.thumbnail(thumb_size)
 
-                    x = edge_padding + (index % grid_size[0]) * (thumb_size[0] + gap)
-                    y = edge_padding + (index // grid_size[0]) * (thumb_size[1] + gap)
-                    collage.paste(img, (x, y))
-                except Exception as e:
-                    print(f"Error loading image from {objekt.image_url}: {e}")
-            
+                            x = edge_padding + (index % grid_size[0]) * (thumb_size[0] + gap)
+                            y = edge_padding + (index // grid_size[0]) * (thumb_size[1] + gap)
+                            collage.paste(img, (x, y))
+                        
+                    except Exception as e:
+                        print(f"Error loading image from {objekt.image_url}: {e}")            
             collage.save(filename, format='PNG')
 
             names = [f"**{objekt.member}**" for objekt in page_objekts]
@@ -358,7 +364,7 @@ class Utility(Plugin):
                 self.color = color
             
             async def update_embed(self, interaction: discord.Interaction):
-                filename, description = create_collage_for_page(self.current_page)
+                filename, description = await create_collage_for_page(self.current_page)
                 file = discord.File(filename, filename="gallery.png")
                 embed = discord.Embed(
                     title=f"tripleS {season[0].capitalize() * int(season[-1])}{series}",
@@ -385,7 +391,7 @@ class Utility(Plugin):
                     self.current_page = 0
                 await self.update_embed(interaction)
 
-        filename, description = create_collage_for_page(current_page)
+        filename, description = await create_collage_for_page(current_page)
         file = discord.File(filename, filename="gallery.png")
         embed = discord.Embed(
             title=f"tripleS {season[0].capitalize() * int(season[-1])}{series}",
@@ -396,6 +402,34 @@ class Utility(Plugin):
         embed.set_footer(text=f"Page {current_page + 1}/{total_pages}")
         view = PaginationView(color=color)
         await interaction.followup.send(embed=embed, view=view, file=file)
+
+    @app_commands.command(name="como_leaderboard", description="View the como leaderboard.")
+    async def como_leaderboard_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        leaderboard_data = await EconomyModel.all().order_by("-balance").limit(10).values("id", "balance")
+
+        if not leaderboard_data:
+            await interaction.followup.send("No como leaderboard data available.", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="GNDSG Slur Gacha Como Leaderboard",
+            description="Here are the 10 richest members:",
+            color=0xFFD700
+        )
+
+        for rank, entry in enumerate(leaderboard_data, start=1):
+            user_id = entry["id"]
+            balance = entry["balance"]
+            user = await self.bot.fetch_user(user_id)
+            embed.add_field(
+                name=f"#{rank} {user.name}",
+                value=f"Total Como: {balance}",
+                inline=False
+            )
+
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Utility(bot))
