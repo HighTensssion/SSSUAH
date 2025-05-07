@@ -1254,6 +1254,8 @@ class EconomyPlugin(Plugin):
                 await interaction.response.send_message("You don't have enough como!", ephemeral=True)
                 return
             
+            await interaction.response.defer()
+            
             user_data.balance -= shop_item.price
             await user_data.save()
 
@@ -1264,7 +1266,7 @@ class EconomyPlugin(Plugin):
             else:
                 await CollectionModel.create(user_id=str(user.id), objekt_id=shop_item.objekt.id, copies=1)
             
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{user.mention} successfully purchased **[{shop_item.objekt.member} {shop_item.objekt.season[0] * int(shop_item.objekt.season[-1])}{shop_item.objekt.series}]({shop_item.objekt.image_url})** for **{shop_item.price}** como!"
             )
         
@@ -1272,11 +1274,13 @@ class EconomyPlugin(Plugin):
 
     @app_commands.command(name="shop", description="View the shop.")
     async def shop_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
         user_id = interaction.user.id
         shop_items = await ShopModel.filter(user_id=user_id).prefetch_related("objekt")
 
         if not shop_items:
-            await interaction.response.send_message("Your shop is currently empty. Please wait for the next refresh!")
+            await interaction.followup.send("Your shop is currently empty. Please wait for the next refresh!")
             return
         
         now = datetime.now(tz=timezone.utc)
@@ -1311,7 +1315,7 @@ class EconomyPlugin(Plugin):
             button.row = index // 3
             view.add_item(button)
         
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.followup.send(embed=embed, view=view)
     
     @app_commands.command(name="slots", description="Bet your como and spin the slot machine!")
     @app_commands.describe(
@@ -1413,43 +1417,6 @@ class EconomyPlugin(Plugin):
     async def manual_refresh_shop_command(self, interaction:discord.Interaction):
         await self.refresh_shop()
         await interaction.response.send_message("Manual shop refresh complete.", ephemeral=True)
-
-    @app_commands.command(name="transfer", description="Transfer como to another user.")
-    @app_commands.describe(
-        recipient="The user to transfer como to.",
-        amount="The amount of como to transfer."
-    )
-    async def transfer_command(self, interaction: discord.Interaction, recipient: discord.User, amount: int):
-        sender_id = interaction.user.id
-        recipient_id = recipient.id
-
-        # prevent self transfers
-        if sender_id == recipient_id:
-            await interaction.response.send_message("You can't transfer como to yourself!", ephemeral=True)
-            return
-        
-        # prevent negative/zero transfers
-        if amount <= 0:
-            await interaction.response.send_message("You must send more than 0 como.", ephemeral=True)
-            return
-        
-        # get data
-        sender_data = await self.get_user_data(id=sender_id)
-        recipient_data = await self.get_user_data(id=recipient_id)
-
-        # check balance
-        if sender_data.balance < amount:
-            await interaction.response.send_message(f"{interaction.user.mention} doesn't have enough como to complete their send to {recipient.name}! Broke ahh")
-            return
-        
-        # transfer!
-        sender_data.balance -= amount
-        recipient_data.balance += amount
-        await sender_data.save()
-        await recipient_data.save()
-
-        # confirmation message
-        await interaction.response.send_message(f"# Transfer complete\n{interaction.user.mention} transferred **{amount}** como to {recipient.mention}!")
 
 async def setup(bot: Bot): 
     await bot.add_cog(EconomyPlugin(bot))

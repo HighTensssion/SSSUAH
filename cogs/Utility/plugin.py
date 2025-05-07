@@ -911,6 +911,45 @@ class Utility(Plugin):
         embed = get_page_embed(current_page)
         view = PaginationView(user_id=interaction.user.id)
         await interaction.followup.send(embed=embed, view=view)
+
+    @app_commands.command(name="transfer", description="Transfer como to another user.")
+    @app_commands.describe(
+        recipient="The user to transfer como to.",
+        amount="The amount of como to transfer."
+    )
+    async def transfer_command(self, interaction: discord.Interaction, recipient: discord.User, amount: int):
+        await interaction.response.defer()
+
+        sender_id = interaction.user.id
+        recipient_id = recipient.id
+
+        # prevent self transfers
+        if sender_id == recipient_id:
+            await interaction.followup.send(f"{interaction.user.mention} can't transfer como to yourself!")
+            return
+        
+        # prevent negative/zero transfers
+        if amount <= 0:
+            await interaction.followup.send(f"{interaction.user.mention} must send more than 0 como.")
+            return
+        
+        # get data
+        sender_data = await self.get_user_data(id=sender_id)
+        recipient_data = await self.get_user_data(id=recipient_id)
+
+        # check balance
+        if sender_data.balance < amount:
+            await interaction.followup.send(f"{interaction.user.mention} doesn't have enough como to complete their send to {recipient.name}! Broke ahh")
+            return
+        
+        # transfer!
+        sender_data.balance -= amount
+        recipient_data.balance += amount
+        await sender_data.save()
+        await recipient_data.save()
+
+        # confirmation message
+        await interaction.followup.send(f"# Transfer complete\n{interaction.user.mention} transferred **{amount}** como to {recipient.mention}!")
         
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Utility(bot))
