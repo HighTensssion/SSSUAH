@@ -75,7 +75,7 @@ class Utility(Plugin):
 
         embed = Embed(
             title=f"{interaction.user.name}'s Chase Objekt",
-            description=f"Your current chase objekt is **{chase_objekt.member} {chase_objekt.season[0]}{chase_objekt.series}**.",
+            description=f"Your current chase objekt is **{chase_objekt.member} {chase_objekt.season[0] * int(chase_objekt.season[-1])}{chase_objekt.series}**.",
             color=int(chase_objekt.background_color.replace("#", ""), 16)
         )
         embed.set_image(url=chase_objekt.image_url)
@@ -129,7 +129,7 @@ class Utility(Plugin):
         embed = discord.Embed(
             title="Objekt Given!",
             description=f"**{interaction.user}** has given **{user.mention}** the objekt:\n"
-                        f"[{objekt.member} {objekt.season[0]}{objekt.series}]({objekt.image_url})",
+                        f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
             color=color
         )
         embed.set_image(url=objekt.image_url)
@@ -141,7 +141,8 @@ class Utility(Plugin):
     @app_commands.describe(
         season="The season of the objekt.",
         member="The member of the objekt.",
-        series="The series of the objekt."
+        series="The series of the objekt.",
+        verbose="View all info about an objekt"
     )
     @app_commands.choices(
         season=[
@@ -150,11 +151,24 @@ class Utility(Plugin):
             app_commands.Choice(name="cream01", value="cream01"),
             app_commands.Choice(name="divine01", value="divine01"),
             app_commands.Choice(name="ever01", value="ever01"),
+            app_commands.Choice(name="atom02", value="atom02"),
             app_commands.Choice(name="customs", value="gndsg00")
         ]
     )
-    async def view_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
+    async def view_command(self, interaction: discord.Interaction, season: str, member: str, series: str, verbose: bool | None = False):
         objekt_slug = f"{season}-{member}-{series}".lower()
+
+        rarity_mapping = {
+            1: "Common",
+            2: "Uncommon",
+            3: "Rare",
+            4: "Very Rare",
+            5: "Super Rare",
+            6: "Ultra Rare",
+            7: "Uncommon"
+        }
+
+        
 
         # Fetch the objekt
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
@@ -163,15 +177,24 @@ class Utility(Plugin):
             return
 
         # Prepare the embed
+        rarity_str = rarity_mapping.get(objekt.rarity, "")
         if objekt.background_color:
             color = int(objekt.background_color.replace("#", ""), 16)
         else:
             color = 0xFF69B4
+        
+        if verbose:
+            embed = discord.Embed(
+                title=f"{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}",
+                description=f"Objekt name: {objekt.objekt_name}\nMember: {objekt.member}\nSeason: {objekt.season}\nClass: {objekt.class_}\nSeries: {objekt.series}\nRarity: {rarity_str} ({objekt.rarity})\nBorder Color: {objekt.background_color}", 
+                color=color
+            )
+        else:
+            embed = discord.Embed(
+                title=f"{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}",
+                color=color
+            )
 
-        embed = discord.Embed(
-            title=f"{objekt.member} {objekt.season[0]}{objekt.series}",
-            color=color
-        )
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation

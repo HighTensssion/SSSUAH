@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from logging import log
 import os
 import asyncio
 import discord
@@ -116,7 +117,7 @@ class EconomyPlugin(Plugin):
 
         embed = discord.Embed(
             title="Daily Reward!",
-            description=f"You received **{amount} como** and **{objekt.member} {objekt.season[0]}{objekt.series}**!",
+            description=f"You received **{amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=color
         )
         if objekt.image_url:
@@ -200,7 +201,7 @@ class EconomyPlugin(Plugin):
             # response
             embed = discord.Embed(
                 title="Weekly",
-                description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0]}{objekt.series}**!",
+                description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
                 color=color
             )
             if objekt.image_url:
@@ -228,15 +229,15 @@ class EconomyPlugin(Plugin):
             rarity_choice = await self.rarity_choice(rarity, weights)
             
             if rarity_choice == 1:
-                sub_rarity = ["Ever01", "GNDSG00"]
+                sub_rarity = ["Atom02", "GNDSG01"]
                 sub_weights = [0.3, 0.7]
                 season_choice = await self.rarity_choice(sub_rarity, sub_weights)
                 ids = await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat = True)
             else:
-                ids = await ObjektModel.filter(Q(season="Ever01"), rarity=rarity_choice).values_list("id", flat=True)
+                ids = await ObjektModel.filter(Q(season="Atom02"), rarity=rarity_choice).values_list("id", flat=True)
         elif banner:
             if rarity_choice == 1:
-                sub_rarity = [banner, "GNDSG00"]
+                sub_rarity = [banner, "GNDSG01"]
                 sub_weights = [0.3, 0.7]
                 season_choice = await self.rarity_choice(sub_rarity, sub_weights)
                 ids = await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat = True)
@@ -293,7 +294,7 @@ class EconomyPlugin(Plugin):
                         return chase_objekt, pity_taken
                 
             # general pity logic
-            low_rarities = [1, 2, 3]
+            low_rarities = [1, 2, 3, 4]
             if rarity_choice in low_rarities:
                 pity_entry.pity_count += 1
             else:
@@ -353,7 +354,8 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="cream01", value="cream01"),
             app_commands.Choice(name="divine01", value="divine01"),
             app_commands.Choice(name="ever01", value="ever01"),
-            app_commands.Choice(name="customs", value="gndsg00")
+            app_commands.Choice(name="atom02", value="atom02"),
+            app_commands.Choice(name="customs", value="gndsg01")
         ]
     )
     async def set_chase_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
@@ -372,7 +374,7 @@ class EconomyPlugin(Plugin):
         # check if chase already set
         if pity_entry.chase_objekt_slug:
             current_chase = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
-            current_chase_name = f"{current_chase.member} {current_chase.season[0]}{current_chase.series}" if current_chase else "Unknown"
+            current_chase_name = f"{current_chase.member} {current_chase.season[0] * int(current_chase.season[-1])}{current_chase.series}" if current_chase else "Unknown"
 
             # confirm chase change
             class ConfirmChaseChangeView(View):
@@ -396,8 +398,7 @@ class EconomyPlugin(Plugin):
             await interaction.response.send_message(
                 f"You already are chasing **{current_chase_name}**! "
                 f"Changing your chase objekt will reset your pity. Do you wish to proceed?",
-                view=view,
-                ephemeral=True
+                view=view
             )
             await view.wait()
 
@@ -411,137 +412,145 @@ class EconomyPlugin(Plugin):
         await pity_entry.save()
 
         await interaction.response.send_message(
-            f"Your chase objekt has been set to **{objekt.member} {objekt.season[0]}{objekt.series}**!"
+            f"Your chase objekt has been set to **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!"
         )
     
     @app_commands.command(name="spin", description="Collect a random objekt!")
     @app_commands.describe(banner="Select a banner to spin from (leave blank to spin all seasons).")
     @app_commands.choices(
         banner=[
-            app_commands.Choice(name="atom", value="Atom01"),
-            app_commands.Choice(name="binary", value="Binary01"),
-            app_commands.Choice(name="cream", value="Cream01"),
-            app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01"),
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
             app_commands.Choice(name="rateup", value="rateup")
         ]
     )
     @app_commands.checks.cooldown(1,10, key=lambda i: (i.user.id,))
     async def spin_command(self, interaction: discord.Interaction, banner: app_commands.Choice[str] | None = None):
-        user_id = interaction.user.id
-        banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
+        await interaction.response.defer()
 
-        now = datetime.now(tz=timezone.utc)
-        cooldowns = {
-            "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
-            "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
-            "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
-        }
-        reminders = []
-        for command, cooldown in cooldowns.items():
-            if not cooldown or cooldown.expires_at <= now:
-                reminders.append(command.capitalize())
+        try:
+            user_id = interaction.user.id
+            banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
 
-        # user's pity counter
-        pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
+            now = datetime.now(tz=timezone.utc)
+            cooldowns = {
+                "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
+                "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
+                "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
+            }
+            reminders = []
+            for command, cooldown in cooldowns.items():
+                if not cooldown or cooldown.expires_at <= now:
+                    reminders.append(command.capitalize())
 
-        # roll
-        card, pity_taken = await self.give_random_objekt(user_id, banner=banner_value, pity_entry=pity_entry)
+            # user's pity counter
+            pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
 
-        if not card:
-            await interaction.response.send_message("No objekts found in the database.")
-            return
-        
-        rarity_to_como = {
-                1: 1,
-                2: 5,
-                3: 15,
-                4: 35,
-                5: 75,
-                6: 200,
-                7: 5,
-        }
+            # roll
+            card, pity_taken = await self.give_random_objekt(user_id, banner=banner_value, pity_entry=pity_entry)
 
-        como_reward = rarity_to_como.get(card.rarity, 0)
-        user_data = await self.get_user_data(id=user_id)
-        user_data.balance += como_reward
-        await user_data.save()
-
-        if card.background_color:
-            color = int(card.background_color.replace("#", ""), 16)
-        else:
-            color=0xFF69B4
-        
-        collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()        
-        if collection_entry and collection_entry.copies > 1:
-            copies_message = f"You now have {collection_entry.copies} copies of this objekt!"
-        else:
-            copies_message = "Congrats on your new objekt!"
-
-        rarity_mapping = {
-            1: "n ",
-            2: "n ",
-            3: " Rare ",
-            4: " Very Rare ",
-            5: " Super Rare ",
-            6: "n Ultra Rare ",
-            7: "n "
-        }
-
-        rarity_str = rarity_mapping.get(card.rarity, "n ")
-
-        # check if chase target is reached
-        if pity_taken:
-            # target reached
-            embed = discord.Embed(
-                title=f"Congratulations, {interaction.user}, after {pity_taken} spins, your chase ended!",
-                color=color
-            )
-            if card.image_url:
-                embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
-                embed.set_image(url=card.image_url)
-            footer_text = (
-                f"Don't forget to set a new chase objekt with /set_chase!\n"
-                f"You earned {como_reward} como from this spin!"
-            )
-            if reminders:
-                footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
-            embed.set_footer(text=footer_text)
-        else:
-            embed = discord.Embed(
-                title=f"You ({interaction.user}) received a{rarity_str}objekt!",
-                color=color
-            )
-            if card.image_url:
-                embed.description = f"[{card.member} {card.season[0]}{card.series}]({card.image_url})"
-                embed.set_image(url=card.image_url)
+            if not card:
+                await interaction.followup.send("No objekts found in the database.")
+                return
             
-            general_pity = pity_entry.pity_count if pity_entry else 0
-            chase_pity = pity_entry.chase_pity_count if pity_entry else 0
-            footer_text = f"{copies_message}\nGeneral Pity: {general_pity} | Chase Pity: {chase_pity}/250"
-            footer_text = (
-                f"{copies_message}\n"
-                f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
-                f"You earned {como_reward} como from this spin!"
-            )
-            if reminders:
-                footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
-            embed.set_footer(text=footer_text)
+            rarity_to_como = {
+                    1: 10,
+                    2: 50,
+                    3: 150,
+                    4: 350,
+                    5: 750,
+                    6: 2000,
+                    7: 50,
+            }
+
+            como_reward = rarity_to_como.get(card.rarity, 0)
+            user_data = await self.get_user_data(id=user_id)
+            user_data.balance += como_reward
+            await user_data.save()
+
+            if card.background_color:
+                color = int(card.background_color.replace("#", ""), 16)
+            else:
+                color=0xFF69B4
             
-        await interaction.response.send_message(embed=embed)
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()        
+            if collection_entry and collection_entry.copies > 1:
+                copies_message = f"You now have {collection_entry.copies} copies of this objekt!"
+            else:
+                copies_message = "Congrats on your new objekt!"
+
+            rarity_mapping = {
+                1: "n ",
+                2: "n ",
+                3: " Rare ",
+                4: " Very Rare ",
+                5: " Super Rare ",
+                6: "n Ultra Rare ",
+                7: "n "
+            }
+
+            rarity_str = rarity_mapping.get(card.rarity, "n ")
+
+            # check if chase target is reached
+            if pity_taken:
+                # target reached
+                embed = discord.Embed(
+                    title=f"Congratulations, {interaction.user}, after {pity_taken} spins, your chase ended!",
+                    color=color
+                )
+                if card.image_url:
+                    embed.description = f"[{card.member} {card.season[0] * int(card.season[-1])}{card.series}]({card.image_url})"
+                    embed.set_image(url=card.image_url)
+                footer_text = (
+                    f"Don't forget to set a new chase objekt with /set_chase!\n"
+                    f"You earned {como_reward} como from this spin!"
+                )
+                if reminders:
+                    footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
+                embed.set_footer(text=footer_text)
+            else:
+                embed = discord.Embed(
+                    title=f"You ({interaction.user}) received a{rarity_str}objekt!",
+                    color=color
+                )
+                if card.image_url:
+                    embed.description = f"[{card.member} {card.season[0] * int(card.season[-1])}{card.series}]({card.image_url})"
+                    embed.set_image(url=card.image_url)
+                
+                general_pity = pity_entry.pity_count if pity_entry else 0
+                chase_pity = pity_entry.chase_pity_count if pity_entry else 0
+                footer_text = f"{copies_message}\nGeneral Pity: {general_pity} | Chase Pity: {chase_pity}/250"
+                footer_text = (
+                    f"{copies_message}\n"
+                    f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
+                    f"You earned {como_reward} como from this spin!"
+                )
+                if reminders:
+                    footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
+                embed.set_footer(text=footer_text)
+                
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            log.error(f"An error occurred in spin_command: {e}")
+            await interaction.followup.send("An error occurred while processing your spin. Please try again later.", ephemeral=True)
     
     @spin_command.error
     async def spin_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):
             remaining = int(error.retry_after)
-            hours = remaining // 3600
             minutes = (remaining % 3600) // 60
             seconds = remaining % 60
-            time_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+            time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
             await interaction.response.send_message(
                 f"Try again in **{time_str}**.",
                 ephemeral=True
             )
+        elif isinstance(error, discord.NotFound):
+            log.error("Interaction expired before the bot could respond.")
         else:
             raise error
 
@@ -553,12 +562,13 @@ class EconomyPlugin(Plugin):
                            ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)")
     @app_commands.choices(
         filter_by_season=[
-            app_commands.Choice(name="atom", value="Atom01"),
-            app_commands.Choice(name="binary", value="Binary01"),
-            app_commands.Choice(name="cream", value="Cream01"),
-            app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01"),
-            app_commands.Choice(name="customs", value="GNDSG00")
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
+            app_commands.Choice(name="customs", value="GNDSG01")
         ],
         filter_by_class=[
             app_commands.Choice(name="zero", value="Zero"),
@@ -634,7 +644,7 @@ class EconomyPlugin(Plugin):
             page_objekts = sorted_data[start:end]
 
             desc_lines = [
-                f"**{member}** {season[0]}{series} x{copies}"
+                f"**{member}** {season[0] * int(season[-1])}{series} x{copies}"
                 for _, member, season, _, series, _, _, copies in page_objekts
             ]
 
@@ -764,12 +774,13 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="Copies", value="copies"),
         ],
         filter_by_season=[
-            app_commands.Choice(name="atom", value="Atom01"),
-            app_commands.Choice(name="binary", value="Binary01"),
-            app_commands.Choice(name="cream", value="Cream01"),
-            app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01"),
-            app_commands.Choice(name="customs", value="GNDSG00")
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
+            app_commands.Choice(name="customs", value="GNDSG01")
         ],
         filter_by_class=[
             app_commands.Choice(name="zero", value="Zero"),
@@ -861,7 +872,7 @@ class EconomyPlugin(Plugin):
             page_image_urls = image_urls[start:end]
             page_objekts = sorted_data[start:end]
             desc_lines = [
-                f"**{member}** {season[0]}{series} x{copies}"
+                f"**{member}** {season[0] * int(season[-1])}{series} x{copies}"
                 for _, member, season, _, series, _, _, _, copies in page_objekts
             ]
             description = "\n".join(desc_lines)
@@ -1025,7 +1036,7 @@ class EconomyPlugin(Plugin):
         else:
             await CooldownModel.create(user_id=user_id, command="rob", expires_at=expires_at)
         
-        response=f"{target.mention}, you have been robbed!\n{interaction.user} stole **{stolen_como} como** and {interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0]}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
+        response=f"{target.mention}, you have been robbed!\n{interaction.user} stole **{stolen_como} como** and {interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0] * int(stolen_objekt.objekt.season[-1])}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
         
         if reminders:
             response += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
@@ -1041,24 +1052,24 @@ class EconomyPlugin(Plugin):
     )
     @app_commands.choices(
         season=[
-            app_commands.Choice(name="atom01", value="atom01"),
-            app_commands.Choice(name="binary01", value="binary01"),
-            app_commands.Choice(name="cream01", value="cream01"),
-            app_commands.Choice(name="divine01", value="divine01"),
-            app_commands.Choice(name="ever01", value="ever01"),
-            app_commands.Choice(name="customs", value="gndsg00")
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
+            app_commands.Choice(name="customs", value="GNDSG01")
         ]
     )
     async def send_objekt_command(self, interaction:discord.Interaction, recipient: discord.User, season: str, member: str, series: int):
         sender_id = str(interaction.user.id)
         recipient_id = str(recipient.id)
-        objekt_slug = f"{season}-{member}-{series}".lower()
 
         if sender_id == recipient_id:
             await interaction.response.send_message("You can't send an objekt to yourself!", ephemeral=True)
             return
         
-        objekt = await ObjektModel.filter(slug=objekt_slug).first()
+        objekt = await ObjektModel.filter(season__iexact=season, member__iexact=member, series=str(series)).first()
         if not objekt:
             await interaction.response.send_message("Objekt not found!", ephemeral=True)
             return
@@ -1084,7 +1095,7 @@ class EconomyPlugin(Plugin):
             else:
                 await CollectionModel.create(user_id=recipient_id, objekt_id=objekt.id, copies=1)
             
-        objekt = await ObjektModel.get(slug=objekt_slug)
+        objekt = await ObjektModel.get(season=season, member__iexact=member, series=series)
 
         if objekt:
             if objekt.background_color:
@@ -1094,7 +1105,7 @@ class EconomyPlugin(Plugin):
 
             embed = discord.Embed(
                 title=f"{interaction.user} sends an objekt to {recipient}!",
-                description=f"[{objekt.member} {objekt.season[0]}{objekt.series}]({objekt.image_url})",
+                description=f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
                 color=color
             )
             embed.set_image(url=objekt.image_url)
@@ -1102,7 +1113,7 @@ class EconomyPlugin(Plugin):
             await interaction.response.send_message(embed=embed)
 
             await interaction.followup.send(
-                f"{interaction.user.mention} successfully sent **{objekt.member} {objekt.season[0]}{objekt.series}** to {recipient.mention}!"
+                f"{interaction.user.mention} successfully sent **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}** to {recipient.mention}!"
             )
         else:
             await interaction.response.send_message("No objekts found in the database.")
@@ -1122,13 +1133,13 @@ class EconomyPlugin(Plugin):
             total_sold = 0
             total_value = 0
             rarity_values = {
-                1: 2,
-                2: 10,
-                3: 30,
-                4: 70,
-                5: 150,
-                6: 400,
-                7: 10,
+                1: 20,
+                2: 100,
+                3: 300,
+                4: 700,
+                5: 1500,
+                6: 4000,
+                7: 100,
             }
 
             async with in_transaction():
@@ -1150,7 +1161,7 @@ class EconomyPlugin(Plugin):
                 await user_data.save()
             
             await interaction.response.send_message(
-                f"{interaction.user.name} sold **{total_sold} objekts** of rarity {rarity} for **{total_value}** como."
+                f"{interaction.user.name} sold **{total_sold} objekts** of rarity {rarity} for **{total_value}** como.", ephemeral=True
             )
         
         return callback
@@ -1249,7 +1260,7 @@ class EconomyPlugin(Plugin):
                 await CollectionModel.create(user_id=str(user.id), objekt_id=shop_item.objekt.id, copies=1)
             
             await interaction.response.send_message(
-                f"{user.mention} successfully purchased **[{shop_item.objekt.member} {shop_item.objekt.season[0]}{shop_item.objekt.series}]({shop_item.objekt.image_url})** for **{shop_item.price}** como!"
+                f"{user.mention} successfully purchased **[{shop_item.objekt.member} {shop_item.objekt.season[0] * int(shop_item.objekt.season[-1])}{shop_item.objekt.series}]({shop_item.objekt.image_url})** for **{shop_item.price}** como!"
             )
         
         return callback
@@ -1279,7 +1290,7 @@ class EconomyPlugin(Plugin):
             else:
                 ownership_info = "Not Owned"
             embed.add_field(
-                name=f"{item.objekt.member} {item.objekt.season[0]}{item.objekt.series}",
+                name=f"{item.objekt.member} {item.objekt.season[0] * int(item.objekt.season[-1])}{item.objekt.series}",
                 value=f"Rarity: {item.objekt.rarity}\nPrice: {item.price} como\n{ownership_info}\n[View Objekt]({item.objekt.image_url})\n\n",
                 inline=True
             )
@@ -1448,12 +1459,13 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="Copies", value="copies"),
         ],
         filter_by_season=[
-            app_commands.Choice(name="atom", value="Atom01"),
-            app_commands.Choice(name="binary", value="Binary01"),
-            app_commands.Choice(name="cream", value="Cream01"),
-            app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01"),
-            app_commands.Choice(name="customs", value="GNDSG00")
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
+            app_commands.Choice(name="customs", value="GNDSG01")
         ],
         filter_by_class=[
             app_commands.Choice(name="zero", value="Zero"),
@@ -1623,12 +1635,13 @@ class EconomyPlugin(Plugin):
                            rarity="View your collection for a specific rarity of objekts")
     @app_commands.choices(
         season=[
-            app_commands.Choice(name="atom", value="Atom01"),
-            app_commands.Choice(name="binary", value="Binary01"),
-            app_commands.Choice(name="cream", value="Cream01"),
-            app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01"),
-            app_commands.Choice(name="customs", value="GNDSG00")
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
+            app_commands.Choice(name="customs", value="GNDSG01")
         ],
         class_=[
             app_commands.Choice(name="customs", value="Never"),
@@ -1709,10 +1722,10 @@ class EconomyPlugin(Plugin):
             missing_page = missing[start:end]
 
             collected_details = [
-                f"{objekt.member} {objekt.season[0]}{objekt.series}" for objekt in collected_page
+                f"{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}" for objekt in collected_page
             ]
             missing_details = [
-                f"{objekt.member} {objekt.season[0]}{objekt.series}" for objekt in missing_page
+                f"{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}" for objekt in missing_page
             ]
 
             embed = discord.Embed(
@@ -1815,12 +1828,13 @@ class EconomyPlugin(Plugin):
             app_commands.Choice(name="Copies Owned", value="copies")
         ],
         season=[
-            app_commands.Choice(name="atom", value="Atom01"),
-            app_commands.Choice(name="binary", value="Binary01"),
-            app_commands.Choice(name="cream", value="Cream01"),
-            app_commands.Choice(name="divine", value="Divine01"),
-            app_commands.Choice(name="ever", value="Ever01"),
-            app_commands.Choice(name="customs", value="GNDSG00")
+            app_commands.Choice(name="atom01", value="Atom01"),
+            app_commands.Choice(name="binary01", value="Binary01"),
+            app_commands.Choice(name="cream01", value="Cream01"),
+            app_commands.Choice(name="divine01", value="Divine01"),
+            app_commands.Choice(name="ever01", value="Ever01"),
+            app_commands.Choice(name="atom02", value="Atom02"),
+            app_commands.Choice(name="customs", value="GNDSG01")
         ]
     )
     async def leaderboard_command(self, interaction: discord.Interaction, member: str | None = None, season: app_commands.Choice[str] | None = None, mode: app_commands.Choice[str] = None):

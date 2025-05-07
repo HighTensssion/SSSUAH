@@ -9,6 +9,8 @@ from discord.ext import commands
 from logging import getLogger
 from tortoise import Tortoise
 
+ALLOWED_GUILD_ID = 1340196483479371797
+
 log = getLogger("Bot")
 
 __all__ = ("Bot",)
@@ -54,6 +56,17 @@ class Bot(commands.AutoShardedBot):
 
     async def on_ready(self) -> None:
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
+    
+    async def on_guild_join(self, guild: discord.Guild):
+        if guild.id != ALLOWED_GUILD_ID:
+                print(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
+                await guild.leave()
+    
+    async def on_guild_available(self, guild: discord.Guild):
+        if guild.id != ALLOWED_GUILD_ID:
+                print(f"Leaving unauthorized guild: {guild.name} ({guild.id})")
+                await guild.leave()
+
     
     async def on_connect(self) -> None:
         if '-sync' in sys.argv:
