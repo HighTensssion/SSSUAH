@@ -216,7 +216,7 @@ class Utility(Plugin):
     )
     @app_commands.choices(
         season=[
-            app_commands.Choice(name="atom01", value="atom1"),
+            app_commands.Choice(name="atom01", value="atom01"),
             app_commands.Choice(name="binary01", value="binary01"),
             app_commands.Choice(name="cream01", value="cream01"),
             app_commands.Choice(name="divine01", value="divine01"),
