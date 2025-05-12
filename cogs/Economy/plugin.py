@@ -1118,7 +1118,7 @@ class EconomyPlugin(Plugin):
             )
             embed.set_image(url=objekt.image_url)
 
-            await interaction.followup.send(content=confirmation_message, embed=embed)
+            await interaction.followup.send(content=confirmation_message, embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
         else:
             await interaction.followup.send("No objekts found in the database.")
     

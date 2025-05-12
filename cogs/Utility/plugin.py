@@ -156,7 +156,7 @@ class Utility(Plugin):
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation
-        await interaction.followup.send(content=f"**{interaction.user}** has given **{user.mention}** the objekt:\n", embed=embed)
+        await interaction.followup.send(content=f"**{interaction.user}** has given **{user.mention}** the objekt:\n", embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
     
     @app_commands.command(name="view", description="View a specific objekt.")
     @app_commands.describe(
