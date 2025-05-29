@@ -10,6 +10,7 @@ from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel, ShopModel, PityModel
+from core.constants import SEASON_CHOICES, BANNER_CHOICES, RARITY_COMO_REWARDS, RARITY_STR_MAPPING
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
 from tortoise.expressions import Q
@@ -40,179 +41,178 @@ class EconomyPlugin(Plugin):
         except DoesNotExist:
             return await EconomyModel.create(id=id)
     
-    @app_commands.command(name="balance", description="Show your balance or another user's balance.")
-    async def balance_command(self, interaction: discord.Interaction, user: discord.User | None):
-        target = user or interaction.user
-        data = await self.get_user_data(id=target.id)
-        prefix = f"Your ({target})" if not user else f"{user}'s"
-        await self.bot.success(
-            f"{target} has **{data.balance:.0f} como.**", interaction
-        )
-    
-    @app_commands.command(name="daily", description="Claim a random amount of como daily.")
-    async def daily_command(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        user_id = interaction.user.id
+    async def get_cooldown(self, user_id: int, command: str):
+        return await CooldownModel.filter(user_id=user_id, command=command).first()
 
-        cooldown = await CooldownModel.filter(user_id=user_id, command="daily").first()
-        now = datetime.now(tz=timezone.utc)
-
-        cooldowns = {
-            "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
-            "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
-        }
-        reminders = []
-        for command, cd in cooldowns.items():
-            if not cd or cd.expires_at <= now:
-                reminders.append(command.capitalize())
-
-        if cooldown and cooldown.expires_at > now:
-            remaining = cooldown.expires_at - now
-            minutes, seconds = divmod(remaining.total_seconds(), 60)
-            hours, minutes = divmod(minutes, 60)
-            await interaction.followup.send(
-                f"You are on cooldown! Try again in {int(hours)}h{int(minutes)}m.",
-                ephemeral=True
-            )
-            return
-        
-        # give como
-        data = await self.get_user_data(id=user_id)
-        amount = random.randint(500, 2500)
-        data.balance += amount
-        await data.save()
-
-        # give objekt
-        rarity = random.choice([1,2])
-        objekt_ids = await ObjektModel.filter(rarity=rarity).values_list("id", flat=True)
-
-        if not objekt_ids:
-            await interaction.followup.send(f"You received **{amount}** como but no objekts of rarity {rarity} are available in the database.", ephemeral=True)
-            return
-    
-        random_objekt_id = random.choice(objekt_ids)
-        objekt = await ObjektModel.get(id=random_objekt_id)
-
-        objekt = await ObjektModel.get(id=random_objekt_id)
-        
-        if objekt.background_color:
-            color = int(objekt.background_color.replace("#", ""), 16)
+    async def set_cooldown(self, user_id: int, command: str, expires_at: datetime):
+        cooldown = await self.get_cooldown(user_id, command)
+        if cooldown:
+            cooldown.expires_at = expires_at
+            await cooldown.save()
         else:
-            color=0xFF69B4
+            await CooldownModel.create(user_id=user_id, command=command, expires_at=expires_at)
 
+    async def update_user_balance(self, user_id: int, amount: int):
+        user_data = await self.get_user_data(id=user_id)
+        user_data.balance += amount
+        await user_data.save()
+
+    async def get_random_objekt_by_rarity(self, rarity: int):
+        objekt_ids = await ObjektModel.filter(rarity=rarity).values_list("id", flat=True)
+        if not objekt_ids:
+            return None
+        random_objekt_id = random.choice(objekt_ids)
+        return await ObjektModel.get(id=random_objekt_id)
+
+    async def add_objekt_to_user(self, user_id: int, objekt: ObjektModel):
         async with in_transaction():
             collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id).first()
-
             if collection_entry:
                 collection_entry.copies += 1
                 await collection_entry.save()
             else:
                 await CollectionModel.create(user_id=str(user_id), objekt_id=objekt.id, copies=1)
 
-        expires_at = now + timedelta(hours=24)
-        if cooldown:
-            cooldown.expires_at = expires_at
-            await cooldown.save()
-        else:
-            await CooldownModel.create(user_id=user_id, command="daily", expires_at=expires_at)
+    async def get_ready_commands(self, user_id: int, now: datetime, commands: list[str]):
+        reminders = []
+        for command in commands:
+            cooldown = await self.get_cooldown(user_id, command)
+            if not cooldown or cooldown.expires_at <= now:
+                reminders.append(command.capitalize())
+        return reminders
 
+    def create_daily_reward_embed(self, como_amount: int, objekt: ObjektModel, reminders: list[str]):
+        color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xFF69B4
         embed = discord.Embed(
             title="Daily Reward!",
-            description=f"You received **{amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
+            description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=color
         )
         if objekt.image_url:
             embed.set_image(url=objekt.image_url)
         if reminders:
             embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
-            
-        await interaction.followup.send(embed=embed)
+        return embed
 
-    @app_commands.command(name="weekly", description="Claim 5000 como and a rare objekt weekly.")
-    async def weekly_command(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        user_id = interaction.user.id
+    def format_time_difference(self, time_delta: timedelta):
+        minutes, seconds = divmod(time_delta.total_seconds(), 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{int(hours)}h {int(minutes)}m"
 
-        cooldown = await CooldownModel.filter(user_id=user_id, command="weekly").first()
-        now = datetime.now(tz=timezone.utc)
+    def create_weekly_reward_embed(self, como_amount: int, objekt: ObjektModel, reminders: list[str]):
+        color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xFF69B4
+        embed = discord.Embed(
+            title="Weekly Reward!",
+            description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
+            color=color
+        )
+        if objekt.image_url:
+            embed.set_image(url=objekt.image_url)
+        if reminders:
+            embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
+        return embed
 
-        cooldowns = {
-            "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
-            "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
-        }
-        reminders = []
-        for command, cd in cooldowns.items():
-            if not cd or cd.expires_at <= now:
-                reminders.append(command.capitalize())
-
-        if cooldown and cooldown.expires_at > now:
-            remaining = cooldown.expires_at - now
-            minutes, seconds = divmod(remaining.total_seconds(), 60)
-            hours, minutes = divmod(minutes, 60)
-            days, hours = divmod(hours, 24)
-            await interaction.followup.send(
-                f"You are on cooldown! Try again in {int(days)}d {int(hours)}h {int(minutes)}m.",
-                ephemeral=True
-            )
-            return
-        
-        # give como
-        data = await self.get_user_data(id=user_id)
-        como_amount = 5000
-        data.balance += como_amount
-        await data.save()
-
-        # give objekt
-        rarity_choices = [4, 5, 6]
-        rarity_weights = [0.6, 0.3, 0.1]
-        chosen_rarity = random.choices(rarity_choices, weights=rarity_weights, k=1)[0]
-
-        objekt_ids = await ObjektModel.filter(rarity=chosen_rarity).values_list("id", flat=True)
-
-        if not objekt_ids:
-            await interaction.followup.send(
-                f"You received **{como_amount} como**, but no objekts of rarity {chosen_rarity} are available in the database.",
-                ephemeral=True
-            )
-            return
-        
-        random_objekt_id = random.choice(objekt_ids)
-        objekt = await ObjektModel.get(id=random_objekt_id)
-        if objekt.background_color:
-            color = int(objekt.background_color.replace("#", ""), 16)
+    async def get_objekt_ids_for_banner(self, rarity_choice: int, banner: str | None):
+        if banner == "rateup":
+            return await self.handle_rateup_banner(rarity_choice)
+        elif banner:
+            return await self.handle_specific_banner(rarity_choice, banner)
         else:
-            color=0xFF69B4
+            return await ObjektModel.filter(rarity=rarity_choice).values_list("id", flat=True)
 
-        async with in_transaction():
-            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id).first()
+    async def handle_rateup_banner(self, rarity_choice: int):
+        if rarity_choice == 1:
+            sub_rarity = ["Atom02", "GNDSG01"]
+            sub_weights = [0.3, 0.7]
+            season_choice = await self.rarity_choice(sub_rarity, sub_weights)
+            return await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat=True)
+        else:
+            return await ObjektModel.filter(Q(season="Atom02"), rarity=rarity_choice).values_list("id", flat=True)
 
-            if collection_entry:
-                collection_entry.copies += 1
-                await collection_entry.save()
-            else:
-                await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id, copies=1)
+    async def handle_specific_banner(self, rarity_choice: int, banner: str):
+        if rarity_choice == 1:
+            sub_rarity = [banner, "GNDSG01"]
+            sub_weights = [0.3, 0.7]
+            season_choice = await self.rarity_choice(sub_rarity, sub_weights)
+            return await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat=True)
+        else:
+            return await ObjektModel.filter(season=banner, rarity=rarity_choice).values_list("id", flat=True)
 
-            # cooldown set
-            expires_at = now + timedelta(days=7)
-            if cooldown:
-                cooldown.expires_at = expires_at
-                await cooldown.save()
-            else:
-                await CooldownModel.create(user_id=user_id, command="weekly", expires_at=expires_at)
-            
-            # response
-            embed = discord.Embed(
-                title="Weekly",
-                description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
-                color=color
-            )
-            if objekt.image_url:
-                embed.set_image(url=objekt.image_url)
-            
-            if reminders:
-                embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
-            
-            await interaction.followup.send(embed=embed)
+    async def handle_pity(self, user_id: int, ids: list[int], pity_entry: PityModel, banner: str | None, rarity_choice: int):
+        if pity_entry.chase_objekt_slug:
+            card, pity_taken = await self.handle_chase_pity(user_id, ids, pity_entry)
+            if card:
+                return card, pity_taken
+
+        return await self.handle_general_pity(user_id, ids, pity_entry, banner, rarity_choice)
+
+    async def handle_chase_pity(self, user_id: int, ids: list[int], pity_entry: PityModel):
+        chase_objekt = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
+        if chase_objekt and chase_objekt.id in ids:
+            random_id = random.choice(ids)
+            card = await ObjektModel.get(id=random_id)
+
+            if card.id == chase_objekt.id:
+                return await self.reset_chase_pity(user_id, card, pity_entry)
+
+        pity_entry.chase_pity_count += 1
+        if pity_entry.chase_pity_count >= 250:
+            return await self.reset_chase_pity(user_id, chase_objekt, pity_entry)
+
+        await pity_entry.save()
+        return None, None
+
+    async def reset_chase_pity(self, user_id: int, card: ObjektModel, pity_entry: PityModel):
+        pity_taken = pity_entry.chase_pity_count
+        pity_entry.chase_pity_count = 0
+        pity_entry.chase_objekt_slug = None
+        pity_entry.pity_count = 0
+        await pity_entry.save()
+
+        await self.add_objekt_to_user(user_id, card)
+        return card, pity_taken
+
+    async def handle_general_pity(self, user_id: int, ids: list[int], pity_entry: PityModel, banner: str | None, rarity_choice: int):
+        low_rarities = [1, 2, 3, 4]
+        if rarity_choice in low_rarities:
+            pity_entry.pity_count += 1
+        else:
+            pity_entry.pity_count = 0
+
+        if pity_entry.pity_count >= 80:
+            return await self.reset_general_pity(user_id, pity_entry, banner)
+
+        await pity_entry.save()
+        return None, None
+
+    async def reset_general_pity(self, user_id: int, pity_entry: PityModel, banner: str | None):
+        pity_entry.pity_count = 0
+        owned_ids = await CollectionModel.filter(user_id=user_id).values_list("objekt_id", flat=True)
+
+        if banner:
+            higher_rarity_cards = await ObjektModel.filter(rarity__gte=4, season=banner).exclude(id__in=owned_ids).values_list("id", flat=True)
+        else:
+            higher_rarity_cards = await ObjektModel.filter(rarity__gte=4).exclude(id__in=owned_ids).values_list("id", flat=True)
+
+        if higher_rarity_cards:
+            pity_card_id = random.choice(higher_rarity_cards)
+            pity_card = await ObjektModel.get(id=pity_card_id)
+            await self.add_objekt_to_user(user_id, pity_card)
+            await pity_entry.save()
+            return pity_card, None
+
+        await pity_entry.save()
+        return None, None
+
+    async def select_random_objekt(self, user_id: int, ids: list[int]):
+        random_id = random.choice(ids)
+        card = await ObjektModel.get(id=random_id)
+
+        if not card:
+            return None, None
+
+        await self.add_objekt_to_user(user_id, card)
+        return card, None
 
     async def rarity_choice(self, rarity, weights):
         if not rarity:
@@ -225,141 +225,217 @@ class EconomyPlugin(Plugin):
         rarity_choice = await self.rarity_choice(rarity, weights)
         
         # handle banners
-        if banner == "rateup":
-            rarity = [7, 1]
-            weights = [0.4, 0.6]
-            rarity_choice = await self.rarity_choice(rarity, weights)
-            
-            if rarity_choice == 1:
-                sub_rarity = ["Atom02", "GNDSG01"]
-                sub_weights = [0.3, 0.7]
-                season_choice = await self.rarity_choice(sub_rarity, sub_weights)
-                ids = await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat = True)
-            else:
-                ids = await ObjektModel.filter(Q(season="Atom02"), rarity=rarity_choice).values_list("id", flat=True)
-        elif banner:
-            if rarity_choice == 1:
-                sub_rarity = [banner, "GNDSG01"]
-                sub_weights = [0.3, 0.7]
-                season_choice = await self.rarity_choice(sub_rarity, sub_weights)
-                ids = await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat = True)
-            else:
-                ids = await ObjektModel.filter(season=banner, rarity=rarity_choice).values_list("id", flat=True)
-        else:
-            ids = await ObjektModel.filter(rarity=rarity_choice).values_list("id", flat=True)
-        
+        ids = await self.get_objekt_ids_for_banner(rarity_choice, banner)
+
         if not ids:
             return None, None
         
-        # handle pity
         if pity_entry:
-            if pity_entry.chase_objekt_slug:
-                # check for early pity
-                chase_objekt = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
-                if chase_objekt and chase_objekt.id in ids: # chase objekt is obtainable naturally
-                    random_id = random.choice(ids)
-                    card = await ObjektModel.get(id=random_id)
-
-                    if card.id == chase_objekt.id: # chase obtained naturally before pity
-                        pity_taken = pity_entry.chase_pity_count
-                        pity_entry.chase_pity_count = 0
-                        pity_entry.chase_objekt_slug = None
-                        pity_entry.pity_count = 0 # general pity reset
-                        await pity_entry.save()
-
-                        async with in_transaction():
-                            collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=card.id).first()
-                            if collection_entry:
-                                collection_entry.copies += 1
-                                await collection_entry.save()
-                            else:
-                                await CollectionModel.create(user_id=user_id, objekt_id=card.id, copies=1)
-                        return card, pity_taken
-                    
-                pity_entry.chase_pity_count += 1
-                if pity_entry.chase_pity_count >= 250:
-                    if chase_objekt:
-                        # pity reset
-                        pity_taken = pity_entry.chase_pity_count
-                        pity_entry.chase_pity_count = 0
-                        pity_entry.chase_objekt_slug = None
-                        pity_entry.pity_count = 0 # reset general pity
-                        await pity_entry.save()
-
-                        async with in_transaction():
-                            collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=chase_objekt.id).first()
-                            if collection_entry:
-                                collection_entry.copies += 1
-                                await collection_entry.save()
-                            else:
-                                await CollectionModel.create(user_id=user_id, objekt_id=chase_objekt.id, copies=1)
-                        return chase_objekt, pity_taken
-                
-            # general pity logic
-            low_rarities = [1, 2, 3, 4]
-            if rarity_choice in low_rarities:
-                pity_entry.pity_count += 1
-            else:
-                pity_entry.pity_count = 0
-                
-            if pity_entry.pity_count >= 80:
-                pity_entry.pity_count = 0
-                owned_ids = await CollectionModel.filter(user_id=user_id).values_list("objekt_id", flat=True)
-                
-                # apply season filtering if banner is specified
-                if banner:
-                    higher_rarity_cards = await ObjektModel.filter(rarity__gte=4, season=banner).exclude(id__in=owned_ids).values_list("id", flat=True)
-                else:
-                    higher_rarity_cards = await ObjektModel.filter(rarity__gte=4).exclude(id__in=owned_ids).values_list("id", flat=True)
-
-                if higher_rarity_cards:
-                    pity_card_id = random.choice(higher_rarity_cards)
-                    pity_card = await ObjektModel.get(id=pity_card_id)
-
-                    async with in_transaction():
-                        collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=pity_card.id).first()
-                        if collection_entry:
-                            collection_entry.copies += 1
-                            await collection_entry.save()
-                        else:
-                            await CollectionModel.create(user_id=user_id, objekt_id=pity_card.id, copies=1)
-                    await pity_entry.save()
-                    return pity_card, None
-            await pity_entry.save()
-
-        # random selection
-        random_id = random.choice(ids)
-        card = await ObjektModel.get(id=random_id)
-
-        if not card:
-            return None, None
+            card, pity_taken = await self.handle_pity(user_id, ids, pity_entry, banner, rarity_choice)
+            if card:
+                return card, pity_taken
         
-        async with in_transaction():
-            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()
+        return await self.select_random_objekt(user_id, ids)
 
-            if collection_entry:
-                collection_entry.copies += 1
-                await collection_entry.save()
-            else:
-                await CollectionModel.create(user_id=str(user_id), objekt_id=card.id, copies=1)
+    async def validate_objekt_slug(self, objekt_slug: str) -> ObjektModel | None:
+        return await ObjektModel.filter(slug=objekt_slug).first()
 
-        return card, None
+    async def confirm_chase_change(self, interaction: discord.Interaction, pity_entry: PityModel) -> bool:
+        current_chase = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
+        current_chase_name = (
+            f"{current_chase.member} {current_chase.season[0] * int(current_chase.season[-1])}{current_chase.series}"
+            if current_chase else "Unknown"
+        )
+
+        class ConfirmChaseChangeView(View):
+            def __init__(self, user_id: int):
+                super().__init__()
+                self.user_id = user_id
+                self.value = None
+
+            @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
+            async def confirm(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
+                    return
+                self.value = True
+                await interaction.response.defer()
+                self.stop()
+
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+            async def cancel(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
+                    return
+                self.value = False
+                await interaction.response.defer()
+                self.stop()
+
+        view = ConfirmChaseChangeView(user_id=interaction.user.id)
+        await interaction.followup.send(
+            f"You are already chasing **{current_chase_name}**! Changing your chase objekt will reset your pity. Do you wish to proceed?",
+            ephemeral=True,
+            view=view
+        )
+        await view.wait()
+
+        if view.value is None or not view.value:
+            await interaction.followup.send("Chase objekt change canceled.", ephemeral=True)
+            return False
+
+        return True
+
+    async def update_chase_objekt(self, pity_entry: PityModel, objekt_slug: str):
+        pity_entry.chase_objekt_slug = objekt_slug
+        pity_entry.chase_pity_count = 0
+        await pity_entry.save()
+
+    def calculate_como_reward(self, rarity: int) -> int:
+        return RARITY_COMO_REWARDS.get(rarity, 0)
+
+    async def create_spin_embed(
+        self,
+        user: discord.User,
+        card: ObjektModel,
+        pity_entry: PityModel,
+        pity_taken: int | None,
+        como_reward: int,
+        reminders: list[str]
+    ) -> discord.Embed:
+        color = int(card.background_color.replace("#", ""), 16) if card.background_color else 0xFF69B4
+        
+        rarity_str = RARITY_STR_MAPPING.get(card.rarity, "n ")
+        
+        collection_entry = await CollectionModel.filter(user_id=str(user.id), objekt_id=card.id).first()        
+        if collection_entry and collection_entry.copies > 1:
+            copies_message = f"You now have {collection_entry.copies} copies of this objekt!"
+        else:
+            copies_message = "Congrats on your new objekt!"
+
+        # Check if chase target is reached
+        if pity_taken:
+            title = f"Congratulations, {user}, after {pity_taken} spins, your chase ended!"
+            footer_text = (
+                f"Don't forget to set a new chase objekt with /set_chase!\n"
+                f"You earned {como_reward} como from this spin!"
+            )
+        else:
+            title = f"You ({user}) received a{rarity_str}objekt!"
+            general_pity = pity_entry.pity_count if pity_entry else 0
+            chase_pity = pity_entry.chase_pity_count if pity_entry else 0
+            footer_text = (
+                f"{copies_message}\n"
+                f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
+                f"You earned {como_reward} como from this spin!"
+            )
+
+        if reminders:
+            footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
+
+        embed = discord.Embed(title=title, color=color)
+        embed.description = f"[{card.member} {card.season[0] * int(card.season[-1])}{card.series}]({card.image_url})"
+        embed.set_image(url=card.image_url)
+        embed.set_footer(text=footer_text)
+
+        return embed
+
+    @app_commands.command(name="balance", description="Show your balance or another user's balance.")
+    async def balance_command(self, interaction: discord.Interaction, user: discord.User | None):
+        await interaction.response.defer()
+
+        target = user or interaction.user
+        user_data = await self.get_user_data(id=target.id)
+        
+        embed = discord.Embed(
+            title="Balance Check",
+            description=f"**{target.mention}** has **{user_data.balance:.0f} como.**",
+            color=0x00FF00
+        )
+        await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="daily", description="Claim a random amount of como daily.")
+    async def daily_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        user_id = interaction.user.id
+        now = datetime.now(tz=timezone.utc)
+
+        cooldown = await self.get_cooldown(user_id, "daily")
+        if cooldown and cooldown.expires_at > now:
+            remaining_time = self.format_time_difference(cooldown.expires_at - now)
+            await interaction.followup.send(
+                f"You are on cooldown! Try again in {remaining_time}.",
+                ephemeral=True
+            )
+            return
+        
+        como_amount = random.randint(500, 2500)
+        await self.update_user_balance(user_id, como_amount)
+
+        rarity = random.choice([1,2])
+        objekt = await self.get_random_objekt_by_rarity(rarity)
+        if not objekt:
+            await interaction.followup.send(
+                f"You received **{como_amount}** como but no objekts of rarity {rarity} are available in the database.",
+                ephemeral=True
+            )
+            return
+        
+        await self.add_objekt_to_user(user_id, objekt)
+
+        await self.set_cooldown(user_id, "daily", now + timedelta(days=1))
+
+        reminders = await self.get_ready_commands(user_id, now, ["rob", "weekly"])
+
+        embed = self.create_daily_reward_embed(como_amount, objekt, reminders) 
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="weekly", description="Claim 5000 como and a rare objekt weekly.")
+    async def weekly_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        user_id = interaction.user.id
+        now = datetime.now(tz=timezone.utc)
+        
+        cooldown = await self.get_cooldown(user_id, "weekly")
+        if cooldown and cooldown.expires_at > now:
+            remaining_time = self.format_time_difference(cooldown.expires_at - now)
+            await interaction.followup.send(
+                f"You are on cooldown! Try again in {remaining_time}.",
+                ephemeral=True
+            )
+            return
+
+        como_amount = 5000
+        await self.update_user_balance(user_id, como_amount)
+
+        # give objekt
+        rarity_choices = [4, 5, 6]
+        rarity_weights = [0.6, 0.3, 0.1]
+        chosen_rarity = random.choices(rarity_choices, weights=rarity_weights, k=1)[0]
+        objekt = await self.get_random_objekt_by_rarity(chosen_rarity)
+
+        if not objekt:
+            await interaction.followup.send(
+                f"You received **{como_amount} como**, but no objekts of rarity {chosen_rarity} are available in the database.",
+                ephemeral=True
+            )
+            return
+        
+        await self.add_objekt_to_user(user_id, objekt)
+        
+        await self.set_cooldown(user_id, "weekly", now + timedelta(days=7))
+
+        reminders = await self.get_ready_commands(user_id, now, ["daily", "rob"])
+        
+        embed = self.create_weekly_reward_embed(como_amount, objekt, reminders)
+        await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="set_chase", description="Set a chase objekt, which you will be guaranteed to receive within 250 spins.")
-    @app_commands.describe(season="The season which your chase objekt is in.",
-                           member="The member whose objekt you wish to chase. (Ex. Nien, Honeydan)",
-                           series="The series of your desired chase objekt. (Ex. 000, 309, 901)")
-    @app_commands.choices(
-        season=[
-            app_commands.Choice(name="atom01", value="atom01"),
-            app_commands.Choice(name="binary01", value="binary01"),
-            app_commands.Choice(name="cream01", value="cream01"),
-            app_commands.Choice(name="divine01", value="divine01"),
-            app_commands.Choice(name="ever01", value="ever01"),
-            app_commands.Choice(name="atom02", value="atom02"),
-            app_commands.Choice(name="customs", value="gndsg01")
-        ]
+    @app_commands.describe(
+        season="The season which your chase objekt is in.",
+        member="The member whose objekt you wish to chase. (Ex. Nien, Honeydan)",
+        series="The series of your desired chase objekt. (Ex. 000, 309, 901)"
     )
+    @app_commands.choices(season=SEASON_CHOICES)
     async def set_chase_command(self, interaction: discord.Interaction, season: str, member: str, series: str):
         await interaction.response.defer()
 
@@ -367,7 +443,7 @@ class EconomyPlugin(Plugin):
         objekt_slug = f"{season}-{member}-{series}".lower()
 
         # validate slug
-        objekt = await ObjektModel.filter(slug=objekt_slug).first()
+        objekt = await self.validate_objekt_slug(objekt_slug)
         if not objekt:
             await interaction.followup.send("The specified objekt slug does not exist!", ephemeral=True)
             return
@@ -377,62 +453,25 @@ class EconomyPlugin(Plugin):
 
         # check if chase already set
         if pity_entry.chase_objekt_slug:
-            current_chase = await ObjektModel.filter(slug=pity_entry.chase_objekt_slug).first()
-            current_chase_name = f"{current_chase.member} {current_chase.season[0] * int(current_chase.season[-1])}{current_chase.series}" if current_chase else "Unknown"
-
-            # confirm chase change
-            class ConfirmChaseChangeView(View):
-                def __init__(self):
-                    super().__init__()
-                    self.value = None
-                
-                @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
-                async def confirm(self, interaction: discord.Interaction, button: Button):
-                    self.value = True
-                    await interaction.response.defer()
-                    self.stop()
-                
-                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
-                async def cancel(self, interaction: discord.Interaction, button: Button):
-                    self.value = False
-                    await interaction.response.defer()
-                    self.stop()
-            
-            view = ConfirmChaseChangeView()
-            await interaction.followup.send(
-                f"You already are chasing **{current_chase_name}**! "
-                f"Changing your chase objekt will reset your pity. Do you wish to proceed?",
-                ephemeral=True,
-                view=view
-            )
-            await view.wait()
-
-            if view.value is None or not view.value:
-                await interaction.followup.send("Chase objekt change canceled.", ephemeral=True)
+            if not await self.confirm_chase_change(interaction, pity_entry):
                 return
         
         # update chase objekt
-        pity_entry.chase_objekt_slug = objekt_slug
-        pity_entry.chase_pity_count = 0
-        await pity_entry.save()
+        await self.update_chase_objekt(pity_entry, objekt_slug)
 
-        await interaction.followup.send(
-            f"Your chase objekt has been set to **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!"
+        embed = discord.Embed(
+            title="Chase Objekt Set!",
+            description=f"Your chase objekt has been set to **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
+            color=int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0x0f0
         )
+        if objekt.image_url:
+            embed.set_image(url=objekt.image_url)
+
+        await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="spin", description="Collect a random objekt!")
     @app_commands.describe(banner="Select a banner to spin from (leave blank to spin all seasons).")
-    @app_commands.choices(
-        banner=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="rateup", value="rateup")
-        ]
-    )
+    @app_commands.choices(banner=BANNER_CHOICES)
     @app_commands.checks.cooldown(1,10, key=lambda i: (i.user.id,))
     async def spin_command(self, interaction: discord.Interaction, banner: app_commands.Choice[str] | None = None):
         await interaction.response.defer()
@@ -441,16 +480,7 @@ class EconomyPlugin(Plugin):
             user_id = interaction.user.id
             banner_value = banner.value if isinstance(banner, app_commands.Choice) else banner
 
-            now = datetime.now(tz=timezone.utc)
-            cooldowns = {
-                "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
-                "rob": await CooldownModel.filter(user_id=user_id, command="rob").first(),
-                "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
-            }
-            reminders = []
-            for command, cooldown in cooldowns.items():
-                if not cooldown or cooldown.expires_at <= now:
-                    reminders.append(command.capitalize())
+            reminders = await self.get_ready_commands(user_id, datetime.now(tz=timezone.utc), ["daily", "rob", "weekly"])
 
             # user's pity counter
             pity_entry, _ = await PityModel.get_or_create(user_id=user_id)
@@ -462,87 +492,16 @@ class EconomyPlugin(Plugin):
                 await interaction.followup.send("No objekts found in the database.")
                 return
             
-            rarity_to_como = {
-                    1: 10,
-                    2: 50,
-                    3: 150,
-                    4: 350,
-                    5: 750,
-                    6: 2000,
-                    7: 50,
-            }
+            como_reward = self.calculate_como_reward(card.rarity)
+            await self.update_user_balance(user_id, como_reward)
 
-            como_reward = rarity_to_como.get(card.rarity, 0)
-            user_data = await self.get_user_data(id=user_id)
-            user_data.balance += como_reward
-            await user_data.save()
-
-            if card.background_color:
-                color = int(card.background_color.replace("#", ""), 16)
-            else:
-                color=0xFF69B4
-            
-            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=card.id).first()        
-            if collection_entry and collection_entry.copies > 1:
-                copies_message = f"You now have {collection_entry.copies} copies of this objekt!"
-            else:
-                copies_message = "Congrats on your new objekt!"
-
-            rarity_mapping = {
-                1: "n ",
-                2: "n ",
-                3: " Rare ",
-                4: " Very Rare ",
-                5: " Super Rare ",
-                6: "n Ultra Rare ",
-                7: "n "
-            }
-
-            rarity_str = rarity_mapping.get(card.rarity, "n ")
-
-            # check if chase target is reached
-            if pity_taken:
-                # target reached
-                embed = discord.Embed(
-                    title=f"Congratulations, {interaction.user}, after {pity_taken} spins, your chase ended!",
-                    color=color
-                )
-                if card.image_url:
-                    embed.description = f"[{card.member} {card.season[0] * int(card.season[-1])}{card.series}]({card.image_url})"
-                    embed.set_image(url=card.image_url)
-                footer_text = (
-                    f"Don't forget to set a new chase objekt with /set_chase!\n"
-                    f"You earned {como_reward} como from this spin!"
-                )
-                if reminders:
-                    footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
-                embed.set_footer(text=footer_text)
-            else:
-                embed = discord.Embed(
-                    title=f"You ({interaction.user}) received a{rarity_str}objekt!",
-                    color=color
-                )
-                if card.image_url:
-                    embed.description = f"[{card.member} {card.season[0] * int(card.season[-1])}{card.series}]({card.image_url})"
-                    embed.set_image(url=card.image_url)
-                
-                general_pity = pity_entry.pity_count if pity_entry else 0
-                chase_pity = pity_entry.chase_pity_count if pity_entry else 0
-                footer_text = f"{copies_message}\nGeneral Pity: {general_pity} | Chase Pity: {chase_pity}/250"
-                footer_text = (
-                    f"{copies_message}\n"
-                    f"General Pity: {general_pity} | Chase Pity: {chase_pity}/250\n"
-                    f"You earned {como_reward} como from this spin!"
-                )
-                if reminders:
-                    footer_text += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
-                embed.set_footer(text=footer_text)
-                
+            embed = await self.create_spin_embed(interaction.user, card, pity_entry, pity_taken, como_reward, reminders)
             await interaction.followup.send(embed=embed)
+            
         except Exception as e:
             log.error(f"An error occurred in spin_command: {e}")
             await interaction.followup.send("An error occurred while processing your spin. Please try again later.", ephemeral=True)
-    
+            
     @spin_command.error
     async def spin_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):

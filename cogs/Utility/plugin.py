@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Optional
 
 import discord
@@ -12,21 +13,273 @@ from .. import Plugin
 from datetime import datetime, timezone
 from tortoise.transactions import in_transaction
 from core import Bot, Embed, CooldownModel, PityModel, ObjektModel, CollectionModel, EconomyModel
+from core.constants import SEASON_CHOICES, RARITY_MAPPING, MEMBER_PRIORITY, CLASS_CHOICES, RARITY_CHOICES, SORT_CHOICES, RARITY_COMO_REWARDS
 from discord import Interaction, app_commands
 from discord.ext.commands import is_owner
 from discord.ui import View, Button
-
 
 class Utility(Plugin):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self.cache = {}
+    
+    async def check_admin_permissions(self, interaction: discord.Interaction) -> bool:
+        if await interaction.client.is_owner(interaction.user) or interaction.user.guild_permissions.administrator:
+            return True
+        await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
+        return False
 
-    async def get_user_data(self, id: int) -> EconomyModel:
-        try:
-            return await EconomyModel.get(pk=id)
-        except DoesNotExist:
-            return await EconomyModel.create(id=id)
+    async def create_embed(self, title: str, description: str, color: int = 0x00FF00, fields: list[tuple[str, str]] = None) -> discord.Embed:
+        embed = discord.Embed(title=title, description=description, color=color)
+        if fields:
+            for name, value in fields:
+                embed.add_field(name=name, value=value, inline=False)
+        return embed
+
+    async def update_user_balance(self, user_id: int, amount: int) -> EconomyModel:
+        user_data, _ = await EconomyModel.get_or_create(id=user_id)
+        user_data.balance += amount
+        await user_data.save()
+        return user_data
+    
+    async def format_time_remaining(self, expires_at: datetime) -> str:
+        time_remaining = expires_at - datetime.now(timezone.utc)
+        total_seconds = time_remaining.total_seconds()
+        if total_seconds <= 0:
+            return "Ready"
+        days, seconds = divmod(total_seconds, 86400)
+        hours, remainder = divmod(seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        return f"{int(days)}d {int(hours)}h {int(minutes)}m" if days > 0 else f"{int(hours)}h {int(minutes)}m"
+
+    def determine_grid_size(self, num_objekts: int) -> tuple[int, int]:
+        if num_objekts == 1:
+            return (1, 1)
+        elif num_objekts <= 4:
+            return (2, 2)
+        elif num_objekts <= 8:
+            return (4, 2)
+        elif num_objekts <= 10:
+            return (5, 2)
+        elif num_objekts <= 12:
+            return (4, 3)
+        elif num_objekts <= 16:
+            return (4, 4)
+        elif num_objekts <= 20:
+            return (5, 4)
+        else:
+            return (6, 4)
+
+    async def generate_collage(self, season: str, series: str, page: int, page_objekts: list, grid_size: tuple[int, int]) -> tuple[str, str]:
+        base_dir = "collage"
+        series_dir = os.path.join(base_dir, "series")
+        os.makedirs(series_dir, exist_ok=True)
+
+        filename = os.path.join(series_dir, f"collage_{season}_{series}_page_{page}.png")
+        cache_key = f"{season}_{series}_page_{page}"
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+
+        thumb_size = (200, 300)
+        gap = 10
+        edge_padding = 20
+        collage_width = (thumb_size[0] + gap) * grid_size[0] - gap + 2 * edge_padding
+        collage_height = (thumb_size[1] + gap) * grid_size[1] - gap + 2 * edge_padding
+
+        background_color = self.get_background_color(page_objekts)
+        collage = Image.new('RGBA', (collage_width, collage_height), background_color)
+
+        async with aiohttp.ClientSession() as session:
+            for index, objekt in enumerate(page_objekts):
+                try:
+                    async with session.get(objekt.image_url, timeout=10) as response:
+                        response.raise_for_status()
+                        img_data = await response.read()
+                        img = Image.open(BytesIO(img_data))
+                        img.thumbnail(thumb_size)
+
+                        x = edge_padding + (index % grid_size[0]) * (thumb_size[0] + gap)
+                        y = edge_padding + (index // grid_size[0]) * (thumb_size[1] + gap)
+                        collage.paste(img, (x, y))
+                except Exception as e:
+                    print(f"Error loading image from {objekt.image_url}: {e}")
+
+        collage.save(filename, format='PNG')
+
+        names = [f"**{objekt.member}**" for objekt in page_objekts]
+        description = "\n".join(
+            [", ".join(names[i:i + grid_size[0]]) for i in range(0, len(names), grid_size[0])]
+        )
+
+        self.cache[cache_key] = (filename, description)
+        return filename, description
+
+    def get_background_color(self, page_objekts: list) -> tuple[int, int, int, int]:
+        """Calculate the background color based on the first objekt's color."""
+        if page_objekts and page_objekts[0].background_color:
+            base_color = int(page_objekts[0].background_color.replace("#", ""), 16)
+            original_r = (base_color >> 16) & 0xFF
+            original_g = (base_color >> 8) & 0xFF
+            original_b = base_color & 0xFF
+
+            r = int(original_r * 0.8)
+            g = int(original_g * 0.8)
+            b = int(original_b * 0.8)
+            return (r, g, b, 255)
+        return (255, 255, 255, 255)
+
+    async def generate_leaderboard_data(self, users, total_objekts_ids, mode):
+        leaderboard_data = []
+        for user in users:
+            user_id = str(user.id)
+            discord_user = await self.bot.fetch_user(user_id)
+            user_name = discord_user.name if discord_user else "Unknown User"
+
+            collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekts_ids).prefetch_related("objekt")
+
+            if mode and mode.value == "copies":
+                total_copies = sum(entry.copies for entry in collected_objekts)
+                leaderboard_data.append((user_id, user_name, total_copies))
+            else:
+                collected_ids = {entry.objekt.id for entry in collected_objekts}
+                collected_count = len(collected_ids)
+                total_count = len(total_objekts_ids)
+                percent_complete = (collected_count / total_count) * 100 if total_count > 0 else 0
+                leaderboard_data.append((user_id, user_name, percent_complete, collected_count, total_count))
+
+        return sorted(leaderboard_data, key=lambda x: x[2], reverse=True)
+
+    def get_leaderboard_title(self, mode, member, season):
+        embed_title = "GNDSG Slur Gacha Leaderboard"
+        if mode and mode.value == "copies":
+            embed_title += " by Copies"
+        else:
+            embed_title += " by Percent Complete"
+        if member:
+            embed_title += f" ({member})"
+        elif season:
+            embed_title += f" ({season.value})"
+        return embed_title
+
+    def add_leaderboard_fields(self, embed, leaderboard_data, mode):
+        for rank, entry in enumerate(leaderboard_data[:10], start=1):
+            if mode and mode.value == "copies":
+                user_id, user_name, total_copies = entry
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies}** copies held", inline=False)
+            else:
+                user_id, user_name, percent_complete, collected_count, total_count = entry
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count}/{total_count})** | **{percent_complete:.2f}%** complete", inline=False)
+
+    def select_objekts_to_give(self, unowned_objekts, all_objekts, amount):
+        if len(unowned_objekts) >= amount:
+            return random.sample(unowned_objekts, amount)
+        else:
+            selected_objekts = unowned_objekts
+            remaining_amount = amount - len(unowned_objekts)
+            owned_objekts_to_add = random.choices(all_objekts, k=remaining_amount)
+            selected_objekts.extend(owned_objekts_to_add)
+            return selected_objekts
+
+    def calculate_como_reward(self, rarity_value, amount):
+        return RARITY_COMO_REWARDS.get(rarity_value, 0) * amount
+
+    async def perform_objekt_transaction(self, user_id, selected_objekts, total_como_reward):
+        async with in_transaction():
+            for objekt in selected_objekts:
+                collection_entry = await CollectionModel.filter(user_id=user_id, objekt_id=objekt.id).first()
+                if collection_entry:
+                    collection_entry.copies += 1
+                    await collection_entry.save()
+                else:
+                    await CollectionModel.create(user_id=user_id, objekt_id=objekt.id, copies=1)
+
+            user_data, _ = await EconomyModel.get_or_create(id=user_id)
+            user_data.balance += total_como_reward
+            await user_data.save()
+
+    async def fetch_filtered_inventory(self, user_id: str, member: str | None, season: app_commands.Choice[str] | None,
+                                   rarity: app_commands.Choice[int] | None, class_: app_commands.Choice[str] | None):
+        query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
+        if member:
+            query = query.filter(objekt__member__iexact=member)
+        if season:
+            query = query.filter(objekt__season__iexact=season.value)
+        if rarity:
+            query = query.filter(objekt__rarity__iexact=rarity.value)
+        if class_:
+            query = query.filter(objekt__class___iexact=class_.value)
+        return await query
+
+    async def create_confirmation_embed(self, duplicates_to_send, recipient_name: str):
+        embed = await self.create_embed(
+            title=f"Confirm Sending Duplicates to {recipient_name}",
+            description="The following objekts will be sent:",
+            fields=[
+                (f"{entry.objekt.member} {entry.objekt.season[0] * int(entry.objekt.season[-1])}{entry.objekt.series}",
+                f"Rarity: {entry.objekt.rarity}, Class: {entry.objekt.class_}")
+                for entry in duplicates_to_send[:8]
+            ],
+            color=0xFFA500
+        )
+        if len(duplicates_to_send) > 8:
+            remaining_count = len(duplicates_to_send) - 8
+            embed.add_field(name="And ...", value=f"{remaining_count} more objekts will be sent.", inline=False)
+        return embed
+
+    async def perform_duplicates_transaction(self, sender_id: str, recipient_id: str, duplicates_to_send):
+        async with in_transaction():
+            for entry in duplicates_to_send:
+                entry.copies -= 1
+                await entry.save()
+
+                recipient_entry = await CollectionModel.filter(user_id=recipient_id, objekt_id=entry.objekt.id).first()
+                if recipient_entry:
+                    recipient_entry.copies += 1
+                    await recipient_entry.save()
+                else:
+                    await CollectionModel.create(user_id=recipient_id, objekt_id=entry.objekt.id, copies=1)
+
+    async def create_success_embed(self, sender_name: str, recipient_name: str, duplicates_to_send):
+        embed = discord.Embed(
+            title=f"{sender_name} sends duplicates to {recipient_name}",
+            description="The following objekts were sent:",
+            color=0x00FF00
+        )
+        max_display_count = 8
+        for entry in duplicates_to_send[:max_display_count]:
+            embed.add_field(
+                name=f"{entry.objekt.member} {entry.objekt.season[0] * int(entry.objekt.season[-1])}{entry.objekt.series}",
+                value=f"Rarity: {entry.objekt.rarity}, Class: {entry.objekt.class_}",
+                inline=False
+            )
+        if len(duplicates_to_send) > max_display_count:
+            remaining_count = len(duplicates_to_send) - max_display_count
+            embed.add_field(name="And ...", value=f"{remaining_count} more objekts were sent.", inline=False)
+        return embed
+
+    class ConfirmationView(View):
+        def __init__(self, user_id: int):
+            super().__init__()
+            self.user_id = user_id
+            self.value = None
+
+        @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
+        async def confirm(self, interaction: discord.Interaction, button: Button):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
+                return
+            self.value = True
+            await interaction.response.defer()
+            self.stop()
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+        async def cancel(self, interaction: discord.Interaction, button: Button):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
+                return
+            self.value = False
+            await interaction.response.defer()
+            self.stop()
 
     @app_commands.command(name='ping', description="Shows the bot's latency.")
     async def ping_command(self, interaction: Interaction):
@@ -38,8 +291,6 @@ class Utility(Plugin):
         await interaction.response.defer()
 
         user_id = str(interaction.user.id)
-
-        # fetch cds
         cooldowns = await CooldownModel.filter(user_id=user_id).all()
 
         if not cooldowns:
@@ -52,24 +303,9 @@ class Utility(Plugin):
             color=0x00FF00
         )
         for cooldown in cooldowns:
-            time_remaining = cooldown.expires_at - datetime.now(timezone.utc)
-
-            if time_remaining.total_seconds() <=0:
-                embed.add_field(
-                    name=cooldown.command,
-                    value="Ready",
-                    inline=False
-                )
-                continue
-            days, seconds = divmod(time_remaining.total_seconds(), 86400)
-            hours, remainder = divmod(seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-
-            time_remaing_str = f"{int(days)}d {int(hours)}h {int(minutes)}m" if days > 0 else f"{int(hours)}h {int(minutes)}m"
-
             embed.add_field(
                 name=cooldown.command,
-                value=f"Time remaining: {time_remaing_str}",
+                value=f"Time remaining: {await self.format_time_remaining(cooldown.expires_at)}",
                 inline=False
             )
         
@@ -81,7 +317,6 @@ class Utility(Plugin):
 
         user_id = str(interaction.user.id)
 
-        # fetch chase objekt
         chase_objekt_data = await PityModel.filter(user_id=user_id).first()
 
         if not chase_objekt_data:
@@ -89,11 +324,12 @@ class Utility(Plugin):
             return
         
         chase_objekt = await ObjektModel.filter(slug=chase_objekt_data.chase_objekt_slug).first()
+        color=int(chase_objekt.background_color.replace("#", ""), 16) if chase_objekt.background_color else 0x00ff00
 
         embed = Embed(
             title=f"{interaction.user.name}'s Chase Objekt",
             description=f"Your current chase objekt is **{chase_objekt.member} {chase_objekt.season[0] * int(chase_objekt.season[-1])}{chase_objekt.series}**.",
-            color=int(chase_objekt.background_color.replace("#", ""), 16)
+            color=color
         )
         embed.set_image(url=chase_objekt.image_url)
 
@@ -106,22 +342,11 @@ class Utility(Plugin):
         member="The member of the objekt.",
         series="The series of the objekt."
     )
-    @app_commands.choices(
-        season=[
-            app_commands.Choice(name="atom01", value="atom01"),
-            app_commands.Choice(name="binary01", value="binary01"),
-            app_commands.Choice(name="cream01", value="cream01"),
-            app_commands.Choice(name="divine01", value="divine01"),
-            app_commands.Choice(name="ever01", value="ever01"),
-            app_commands.Choice(name="atom02", value="atom02"),
-            app_commands.Choice(name="customs", value="gndsg00")
-        ]
-    )
+    @app_commands.choices(season=SEASON_CHOICES)
     async def give_command(self, interaction: discord.Interaction, user: discord.User, season: str, member: str, series: str):
         await interaction.response.defer()
 
-        if not (await self.bot.is_owner(interaction.user) or interaction.user.guild_permissions.administrator):
-            await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
+        if not await self.check_admin_permissions(interaction):
             return
         
         user_id = str(user.id)
@@ -143,12 +368,8 @@ class Utility(Plugin):
                 await CollectionModel.create(user_id=user_id, objekt_id=objekt.id, copies=1)
 
         # Prepare the embed
-        if objekt.background_color:
-            color = int(objekt.background_color.replace("#", ""), 16)
-        else:
-            color = 0xFF69B4
-
-        embed = discord.Embed(
+        color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xFF69B4
+        embed = await self.create_embed(
             title=f"{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}",
             description=f"[View Objekt]({objekt.image_url})",
             color=color
@@ -156,7 +377,11 @@ class Utility(Plugin):
         embed.set_image(url=objekt.image_url)
 
         # Send confirmation
-        await interaction.followup.send(content=f"**{interaction.user}** has given **{user.mention}** the objekt:\n", embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        await interaction.followup.send(
+            content=f"**{interaction.user.mention}** has given **{user.mention}** the objekt:\n",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(users=True)
+        )
     
     @app_commands.command(name="view", description="View a specific objekt.")
     @app_commands.describe(
@@ -165,31 +390,11 @@ class Utility(Plugin):
         series="The series of the objekt.",
         verbose="View all info about an objekt"
     )
-    @app_commands.choices(
-        season=[
-            app_commands.Choice(name="atom01", value="atom01"),
-            app_commands.Choice(name="binary01", value="binary01"),
-            app_commands.Choice(name="cream01", value="cream01"),
-            app_commands.Choice(name="divine01", value="divine01"),
-            app_commands.Choice(name="ever01", value="ever01"),
-            app_commands.Choice(name="atom02", value="atom02"),
-            app_commands.Choice(name="customs", value="gndsg00")
-        ]
-    )
+    @app_commands.choices(season=SEASON_CHOICES)
     async def view_command(self, interaction: discord.Interaction, season: str, member: str, series: str, verbose: bool | None = False):
         await interaction.response.defer()
 
         objekt_slug = f"{season}-{member}-{series}".lower()
-
-        rarity_mapping = {
-            1: "Common",
-            2: "Uncommon",
-            3: "Rare",
-            4: "Very Rare",
-            5: "Super Rare",
-            6: "Ultra Rare",
-            7: "Uncommon"
-        }
 
         # Fetch the objekt
         objekt = await ObjektModel.filter(slug=objekt_slug).first()
@@ -198,11 +403,8 @@ class Utility(Plugin):
             return
 
         # Prepare the embed
-        rarity_str = rarity_mapping.get(objekt.rarity, "")
-        if objekt.background_color:
-            color = int(objekt.background_color.replace("#", ""), 16)
-        else:
-            color = 0xFF69B4
+        rarity_str = RARITY_MAPPING.get(objekt.rarity, "")
+        color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xFF69B4
         
         if verbose:
             embed = discord.Embed(
@@ -226,17 +428,7 @@ class Utility(Plugin):
         season="The season of the series you wish to view.",
         series="The series of objekts you wish to view (ex. 309)."
     )
-    @app_commands.choices(
-        season=[
-            app_commands.Choice(name="atom01", value="atom01"),
-            app_commands.Choice(name="binary01", value="binary01"),
-            app_commands.Choice(name="cream01", value="cream01"),
-            app_commands.Choice(name="divine01", value="divine01"),
-            app_commands.Choice(name="ever01", value="ever01"),
-            app_commands.Choice(name="atom02", value="atom02"),
-            app_commands.Choice(name="customs", value="gndsg01")
-        ]
-    )
+    @app_commands.choices(season=SEASON_CHOICES)
     async def view_gallery_command(self, interaction: discord.Interaction, season: str, series: str):
         await interaction.response.defer()
 
@@ -245,128 +437,26 @@ class Utility(Plugin):
         if not objekts:
             await interaction.followup.send("No objekts found for the specified season and series.", ephemeral=True)
             return
-        
-        member_priority = {
-            "SeoYeon": 1, "Yeonajji": 1.1,
-            "HyeRin": 2, "Aekkeangie":  2.1,
-            "JiWoo": 3, "Rocketdan": 3.1,
-            "ChaeYeon": 4, "Chaengbokdan": 4.1,
-            "YooYeon": 5, "Yooenmi": 5.1,
-            "SooMin": 6, "Daramdan": 6.1,
-            "NaKyoung":7, "Nyangkidan": 7.1,
-            "YuBin": 8, "Bambamdan": 8.1,
-            "Kaede": 9, "Kaedan": 9.1,
-            "DaHyun": 10, "Sodadan": 10.1,
-            "Kotone": 11, "Coladan": 11.1,
-            "YeonJi": 12, "Quackquackdan": 12.1,
-            "Nien": 13, "Honeydan": 13.1,
-            "SoHyun": 14, "Nabills": 14.1,
-            "Xinyu": 15, "Shinandan": 15.1,
-            "Mayu": 16, "Cutiedan": 16.1,
-            "Lynn": 17, "Shamedan": 17.1,
-            "JooBin": 18, "Jjumeokkongdan": 18.1,
-            "HaYeon": 19, "Yukgakdan": 19.1,
-            "ShiOn": 20, "Babondan": 20.1,
-            "ChaeWon": 21, "Ddallangdan": 21.1,
-            "Sullin": 22, "Snowflakes": 22.1,
-            "SeoAh": 23, "Haessaldan": 23.1,
-            "JiYeon": 24, "Danggeundan": 24.1,
-        }
 
-        def custom_sort(objekt):
-            return member_priority.get(objekt.member, float('inf'))
-
-        objekts = sorted(objekts, key=custom_sort)
+        objekts = sorted(objekts, key=lambda objekt: MEMBER_PRIORITY.get(objekt.member, float('inf')))
         
         num_objekts = len(objekts)
-        if num_objekts == 1:
-            grid_size = (1, 1)
-        elif num_objekts <= 4:
-            grid_size = (2, 2)
-        elif num_objekts <= 8:
-            grid_size = (4, 2)
-        elif num_objekts <= 10:
-            grid_size = (5, 2)
-        elif num_objekts <= 12:
-            grid_size = (4, 3)
-        elif num_objekts <= 16:
-            grid_size = (4, 4)
-        elif num_objekts <= 20:
-            grid_size = (5, 4)
-        else:
-            grid_size = (6, 4)
+        grid_size = self.determine_grid_size(num_objekts)
 
-        if objekts and objekts[0].background_color:
-            color = int(objekts[0].background_color.replace("#", ""), 16)
-        else:
-            color = 0xFF69B4
+        color = int(objekts[0].background_color.replace("#", ""), 16) if objekts and objekts[0].background_color else 0xFF69B4
         
         items_per_page = grid_size[0] * grid_size[1]
         total_pages = (num_objekts + items_per_page - 1) // items_per_page
         current_page = 0
 
         async def create_collage_for_page(page):
-            base_dir = "collage"
-            series_dir = os.path.join(base_dir, "series")
-
-            os.makedirs(series_dir, exist_ok=True)
-
-            filename = os.path.join(series_dir, f"collage_{season[0] * int(season[-1])}_{series}_page_{page}.png")
-
-            cache_key = f"{season}_{series}_page_{page}"
-            if cache_key in self.cache:
-                return self.cache[cache_key]
-            
             start = page * items_per_page
             end = start + items_per_page
             page_objekts = objekts[start:end]
 
-            thumb_size = (200, 300)
-            gap = 10
-            edge_padding = 20
-
-            collage_width = (thumb_size[0] + gap) * grid_size[0] - gap + 2 * edge_padding
-            collage_height= (thumb_size[1] + gap) * grid_size[1] - gap + 2 * edge_padding
-
-            if page_objekts and page_objekts[0].background_color:
-                base_color = int(page_objekts[0].background_color.replace("#", ""), 16)
-                original_r = (base_color >> 16) & 0xFF
-                original_g = (base_color >> 8) & 0xFF
-                original_b = base_color & 0xFF
-
-                r = int(original_r * 0.8)
-                g = int(original_g * 0.8)
-                b = int(original_b * 0.8)
-
-                background_color = (r, g, b, 255)
-            else:
-                background_color = (255, 255, 255, 255)
-
-            collage = Image.new('RGBA', (collage_width, collage_height), background_color)
-
-            async with aiohttp.ClientSession() as session:
-                for index, objekt in enumerate(page_objekts):
-                    try:
-                        async with session.get(objekt.image_url, timeout=10) as response:
-                            response.raise_for_status()
-                            img_data = await response.read()
-                            img = Image.open(BytesIO(img_data))
-                            img.thumbnail(thumb_size)
-
-                            x = edge_padding + (index % grid_size[0]) * (thumb_size[0] + gap)
-                            y = edge_padding + (index // grid_size[0]) * (thumb_size[1] + gap)
-                            collage.paste(img, (x, y))
-                        
-                    except Exception as e:
-                        print(f"Error loading image from {objekt.image_url}: {e}")            
-            collage.save(filename, format='PNG')
-
-            names = [f"**{objekt.member}**" for objekt in page_objekts]
-            description = "\n".join(
-                [", ".join(names[i:i + grid_size[0]]) for i in range(0, len(names), grid_size[0])]
+            filename, description = await self.generate_collage(
+                season, series, page, page_objekts, grid_size
             )
-            
-            self.cache[cache_key] = (filename, description)
             return filename, description
         
         class PaginationView(View):
@@ -387,20 +477,14 @@ class Utility(Plugin):
                 embed.set_footer(text=f"Page {self.current_page + 1}/{total_pages}")
                 await interaction.response.edit_message(embed=embed, view=self, attachments=[file])
             
-            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.gray)
             async def previous_page(self, interaction: discord.Interaction, button: Button):
-                if self.current_page > 0:
-                    self.current_page -= 1
-                elif self.current_page == 0:
-                    self.current_page = total_pages - 1
+                self.current_page = (self.current_page - 1) % total_pages
                 await self.update_embed(interaction)
 
             @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
             async def next_page(self, interaction: discord.Interaction, button: Button):
-                if self.current_page < total_pages - 1:
-                    self.current_page += 1
-                elif self.current_page == total_pages - 1:
-                    self.current_page = 0
+                self.current_page = (self.current_page + 1) % total_pages
                 await self.update_embed(interaction)
 
         filename, description = await create_collage_for_page(current_page)
@@ -435,6 +519,7 @@ class Utility(Plugin):
             user_id = entry["id"]
             balance = entry["balance"]
             user = await self.bot.fetch_user(user_id)
+            user_name = user.name if user else "Unknown User"
             embed.add_field(
                 name=f"#{rank} {user.name}",
                 value=f"Total Como: {balance}",
@@ -454,21 +539,12 @@ class Utility(Plugin):
             app_commands.Choice(name="Percent Complete", value="percent"),
             app_commands.Choice(name="Copies Owned", value="copies")
         ],
-        season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ]
+        season=SEASON_CHOICES
     )
     async def leaderboard_command(self, interaction: discord.Interaction, member: str | None = None, season: app_commands.Choice[str] | None = None, mode: app_commands.Choice[str] = None):
         await interaction.response.defer()
 
-        active_filters = sum(bool(x) for x in [member, season])
-        if active_filters > 1:
+        if member and season:
             await interaction.followup.send("You can only filter by one of `member` or `season` at a time.", ephemeral=True)
             return
         
@@ -480,48 +556,14 @@ class Utility(Plugin):
         
         total_objekts = await query.all()
         total_objekts_ids = [objekt.id for objekt in total_objekts]
-
         users = await EconomyModel.all()
-        leaderboard_data = []
-
-        for user in users:
-            user_id = str(user.id)
-            discord_user = await self.bot.fetch_user(user_id)
-            user_name = discord_user.name if discord_user else "Unknown User"
-
-            collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekts_ids).prefetch_related("objekt")
-
-            if mode and mode.value == "copies":
-                total_copies = sum(entry.copies for entry in collected_objekts)
-                leaderboard_data.append((user_id, user_name, total_copies))
-            else:
-                collected_ids = {entry.objekt.id for entry in collected_objekts}
-                collected_count = len(collected_ids)
-                total_count = len(total_objekts)
-                percent_complete = (collected_count / total_count) * 100 if total_count > 0 else 0
-                leaderboard_data.append((user_id, user_name, percent_complete, collected_count, total_count))
         
-        leaderboard_data.sort(key=lambda x: x[2], reverse=True)
+        leaderboard_data = await self.generate_leaderboard_data(users, total_objekts_ids, mode)
 
-        embed_title = "GNDSG Slur Gacha Leaderboard"
-        if mode and mode.value == "copies":
-            embed_title += f" by Copies"
-        else:
-            embed_title += f" by Percent Complete"
-        if member:
-            embed_title += f" ({member}):"
-        elif season:
-            embed_title += f" ({season.value}):"
+        embed_title = self.get_leaderboard_title(mode, member, season)
         
         embed = discord.Embed(title=embed_title, color=0xFFD700)
-
-        for rank, entry in enumerate(leaderboard_data[:10], start=1):
-            if mode and mode.value == "copies":
-                user_id, user_name, total_copies = entry
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies}** copies held", inline=False)
-            else:
-                user_id, user_name, percent_complete, collected_count, total_count = entry
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count}/{total_count})** | **{percent_complete:.2f}%** complete", inline=False)
+        self.add_leaderboard_fields(embed, leaderboard_data, mode)
         
         await interaction.followup.send(embed=embed)
 
@@ -532,57 +574,30 @@ class Utility(Plugin):
                            class_="View your collection for a specific class of objekts",
                            rarity="View your collection for a specific rarity of objekts",
                            series="View your collection for a specific series of objekts (Requires season filter.)")
-    @app_commands.choices(
-        season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ],
-        class_=[
-            app_commands.Choice(name="customs", value="Never"),
-            app_commands.Choice(name="first", value="First"),
-            app_commands.Choice(name="double", value="Double"),
-            app_commands.Choice(name="special", value="Special"),
-            app_commands.Choice(name="welcome", value="Welcome"),
-            app_commands.Choice(name="zero", value="Zero"),
-            app_commands.Choice(name="premier", value="Premier")
-        ],
-        rarity=[
-            app_commands.Choice(name="Common", value=1),
-            app_commands.Choice(name="Uncommon", value=2),
-            app_commands.Choice(name="Rare", value=3),
-            app_commands.Choice(name="Very Rare", value=4),
-            app_commands.Choice(name="Super Rare", value=5),
-            app_commands.Choice(name="Ultra Rare", value=6)
-        ]
-    )
+    @app_commands.choices(season=SEASON_CHOICES, class_=CLASS_CHOICES, rarity=RARITY_CHOICES)
     async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None, series: str | None = None):
-        target = user or interaction.user
-        user_id = str(target.id)
-        prefix = f"Your ({target})" if not user else f"{user}'s"
+        await interaction.response.defer()
 
         if member and series:
-            await interaction.response.send_message("You cannot filter by both `member` and `series` at the same time. Please choose one.", ephemeral=True)
+            await interaction.followup.send("You cannot filter by both `member` and `series` at the same time. Please choose one.", ephemeral=True)
             return
         
         if series and not season:
-            await interaction.response.send_message("Filtering by `series` requires specifying the `season` as well.", ephemeral=True)
+            await interaction.followup.send("Filtering by `series` requires specifying the `season` as well.", ephemeral=True)
             return
         
-        await interaction.response.defer()
+        target = user or interaction.user
+        user_id = str(target.id)
+        prefix = f"Your ({target})" if not user else f"{user}'s"
 
         # apply filters
         query = ObjektModel.all()
         if member:
             query = query.filter(member__iexact=member)
         if season:
-            query = query.filter(season=season.value)
+            query = query.filter(season__iexact=season.value)
         if class_:
-            query = query.filter(class_=class_.value)
+            query = query.filter(class___iexact=class_.value)
         if rarity:
             query = query.filter(rarity=rarity.value)
         if series:
@@ -591,8 +606,6 @@ class Utility(Plugin):
         # fetch objekts based on filters
         total_objekts = await query.all()
         total_objekt_ids = [objekt.id for objekt in total_objekts]
-
-        # feth user's filtered collected objekts
         collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekt_ids).prefetch_related("objekt")
         collected_ids = {entry.objekt.id for entry in collected_objekts}
 
@@ -602,13 +615,9 @@ class Utility(Plugin):
 
         total_count = len(total_objekts)
         collected_count = len(collected)
-        if total_count == 0:
-            collection_percentage = 0
-        else:
-            collection_percentage = (collected_count / total_count) * 100
+        collection_percentage = (collected_count / total_count) * 100 if total_count > 0 else 0
         
         title = f"{prefix} Collection"
-        
         if member:
             title += f" ({member})"
         if season:
@@ -619,7 +628,6 @@ class Utility(Plugin):
             title += f" ({rarity.name})"
         if series:
             title += f" ({series})"
-        
         title += ":"
 
         items_per_page = 9
@@ -645,16 +653,8 @@ class Utility(Plugin):
                 description=f"Collection Progress: **{collection_percentage:.2f}%** ({collected_count}/{total_count})",
                 color=0x008800
             )
-            embed.add_field(
-                name="Collected",
-                value="\n".join(collected_details) or "None",
-                inline=True
-            )
-            embed.add_field(
-                name="Missing",
-                value="\n".join(missing_details) or "None",
-                inline=True
-            )
+            embed.add_field(name="Collected", value="\n".join(collected_details) or "None", inline=True)
+            embed.add_field(name="Missing", value="\n".join(missing_details) or "None", inline=True)
             embed.set_footer(text=f"Page {page + 1}/{total_pages}")
 
             return embed
@@ -668,20 +668,14 @@ class Utility(Plugin):
                 embed = get_page_embed(self.current_page)
                 await interaction.response.edit_message(embed=embed, view=self)
             
-            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.gray)
             async def previous_page(self, interaction: discord.Interaction, button: Button):
-                if self.current_page > 0:
-                    self.current_page -= 1
-                elif self.current_page == 0:
-                    self.current_page = total_pages - 1
+                self.current_page = (self.current_page - 1) % total_pages
                 await self.update_embed(interaction)
 
             @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
             async def next_page(self, interaction: discord.Interaction, button: Button):
-                if self.current_page < total_pages - 1:
-                    self.current_page += 1
-                elif self.current_page == total_pages - 1:
-                    self.current_page = 0
+                self.current_page = (self.current_page + 1) % total_pages
                 await self.update_embed(interaction)
 
         def group_by_season_and_class(objekts):
@@ -735,38 +729,17 @@ class Utility(Plugin):
         filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
         filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
         filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
+        filter_by_rarity="Filter the inventory by rarity. (Leave blank for no filter)",
         sort_by="The sorting criteria for the inventory.",
         ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)"
     )
-    @app_commands.choices(
-        sort_by=[
-            app_commands.Choice(name="Member", value="member"),
-            app_commands.Choice(name="Season", value="season"),
-            app_commands.Choice(name="Class", value="class"),
-            app_commands.Choice(name="Series", value="series"),
-            app_commands.Choice(name="Rarity", value="rarity"),
-            app_commands.Choice(name="Copies", value="copies"),
-        ],
-        filter_by_season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ],
-        filter_by_class=[
-            app_commands.Choice(name="zero", value="Zero"),
-            app_commands.Choice(name="welcome", value="Welcome"),
-            app_commands.Choice(name="first", value="First"),
-            app_commands.Choice(name="special", value="Special"),
-            app_commands.Choice(name="double", value="Double"),
-            app_commands.Choice(name="customs", value="Never"),
-            app_commands.Choice(name="premier", value="Premier")
-        ]
-    )
-    async def compare_inventories_command(self, interaction: discord.Interaction, user2: discord.User, user1: discord.User | None = None, filter_by_member: str | None = None, filter_by_season: app_commands.Choice[str] | None = None, filter_by_class: app_commands.Choice[str] | None = None, sort_by: app_commands.Choice[str] | None = None, ascending: bool | None = False):
+    @app_commands.choices(sort_by=SORT_CHOICES, filter_by_season=SEASON_CHOICES, filter_by_class=CLASS_CHOICES, filter_by_rarity=RARITY_CHOICES)
+    async def compare_inventories_command(
+        self, interaction: discord.Interaction, user2: discord.User, user1: discord.User | None = None,
+        filter_by_member: str | None = None, filter_by_season: app_commands.Choice[str] | None = None,
+        filter_by_class: app_commands.Choice[str] | None = None, filter_by_rarity: app_commands.Choice[int] | None = None,
+        sort_by: app_commands.Choice[str] | None = None,ascending: bool | None = False
+    ):
         await interaction.response.defer()
 
         user1 = user1 or interaction.user
@@ -787,56 +760,45 @@ class Utility(Plugin):
         if filter_by_class:
             query1 = query1.filter(objekt__class_=filter_by_class.value)
             query2 = query2.filter(objekt__class_=filter_by_class.value)
+        if filter_by_rarity:
+            query1 = query1.filter(objekt__rarity=filter_by_rarity.value)
+            query2 = query2.filter(objekt__rarity=filter_by_rarity.value)
 
         user1_inventory = await query1
         user2_inventory = await query2
 
+        def extract_inventory_data(inventory):
+            return [
+                (
+                    entry.objekt.id,
+                    entry.objekt.member,
+                    entry.objekt.season,
+                    entry.objekt.class_,
+                    entry.objekt.series,
+                    entry.objekt.image_url,
+                    entry.objekt.rarity,
+                    entry.copies
+                )
+                for entry in inventory
+            ]
+
         # extract data for sort
-        user1_objekts = [
-            (
-                entry.objekt.id,
-                entry.objekt.member,
-                entry.objekt.season,
-                entry.objekt.class_,
-                entry.objekt.series,
-                entry.objekt.image_url,
-                entry.objekt.rarity,
-                entry.copies
-            )
-            for entry in user1_inventory
-        ]
-        user2_objekts = [
-            (
-                entry.objekt.id,
-                entry.objekt.member,
-                entry.objekt.season,
-                entry.objekt.class_,
-                entry.objekt.series,
-                entry.objekt.image_url,
-                entry.objekt.rarity,
-                entry.copies
-            )
-            for entry in user2_inventory
-        ]
+        user1_objekts = extract_inventory_data(user1_inventory)
+        user2_objekts = extract_inventory_data(user2_inventory)
 
         # sorting
         sort_by_value = sort_by.value if sort_by else "member"
 
         def sort_inventory(data, sort_by, ascending):
-            if sort_by == "member":
-                return sorted(data, key=lambda x: x[1].lower(), reverse=not ascending)
-            elif sort_by == "season":
-                return sorted(data, key=lambda x: x[2].lower(), reverse=not ascending)
-            elif sort_by == "class":
-                return sorted(data, key=lambda x: x[3].lower(), reverse=not ascending)
-            elif sort_by == "series":
-                return sorted(data, key=lambda x: x[4].lower(), reverse=not ascending)
-            elif sort_by == "rarity":
-                return sorted(data, key=lambda x: x[6], reverse=not ascending)
-            elif sort_by == "copies":
-                return sorted(data, key=lambda x: x[7], reverse=not ascending)
-            else:
-                return data
+            sort_key_map = {
+                "member": lambda x: x[1].lower(),
+                "season": lambda x: x[2].lower(),
+                "class": lambda x: x[3].lower(),
+                "series": lambda x: x[4].lower(),
+                "rarity": lambda x: x[6],
+                "copies": lambda x: x[7]
+            }
+            return sorted(data, key=sort_key_map.get(sort_by, lambda x: x[1].lower()), reverse=not ascending)
 
         user1_objekts = sort_inventory(user1_objekts, sort_by_value, ascending)
         user2_objekts = sort_inventory(user2_objekts, sort_by_value, ascending)
@@ -891,15 +853,12 @@ class Utility(Plugin):
                 embed = get_page_embed(self.current_page)
                 await interaction.response.edit_message(embed=embed, view=self)
 
-            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
+            @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.gray)
             async def previous_page(self, interaction: discord.Interaction, button: Button):
                 if interaction.user.id != self.user_id:
                     await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
                     return
-                if self.current_page > 0:
-                    self.current_page -= 1
-                elif self.current_page == 0:
-                    self.current_page = total_pages - 1
+                self.current_page = (self.current_page - 1) % total_pages
                 await self.update_embed(interaction)
 
             @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
@@ -907,11 +866,7 @@ class Utility(Plugin):
                 if interaction.user.id != self.user_id:
                     await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
                     return
-                
-                if self.current_page < total_pages - 1:
-                    self.current_page += 1
-                elif self.current_page == total_pages - 1:
-                    self.current_page = 0
+                self.current_page = (self.current_page + 1) % total_pages
                 await self.update_embed(interaction)
             
         embed = get_page_embed(current_page)
@@ -929,33 +884,150 @@ class Utility(Plugin):
         sender_id = interaction.user.id
         recipient_id = recipient.id
 
-        # prevent self transfers
         if sender_id == recipient_id:
             await interaction.followup.send(f"{interaction.user.mention} can't transfer como to yourself!")
             return
         
-        # prevent negative/zero transfers
         if amount <= 0:
             await interaction.followup.send(f"{interaction.user.mention} must send more than 0 como.")
             return
         
-        # get data
-        sender_data = await self.get_user_data(id=sender_id)
-        recipient_data = await self.get_user_data(id=recipient_id)
+        sender_data, _ = await EconomyModel.get_or_create(id=sender_id)
+        recipient_data, _ = await EconomyModel.get_or_create(id=recipient_id)
 
-        # check balance
         if sender_data.balance < amount:
             await interaction.followup.send(f"{interaction.user.mention} doesn't have enough como to complete their send to {recipient.name}! Broke ahh")
             return
         
-        # transfer!
-        sender_data.balance -= amount
-        recipient_data.balance += amount
-        await sender_data.save()
-        await recipient_data.save()
+        async with in_transaction():
+            sender_data.balance -= amount
+            recipient_data.balance += amount
+            await sender_data.save()
+            await recipient_data.save()
 
-        # confirmation message
+        embed= await self.create_embed(
+            title="Transfer Confirmation",
+            description=f"{interaction.user.name} transferred {amount} como to {recipient.name}.",
+            fields=[
+                ("Sender Balance", f"{interaction.user.name} now has {sender_data.balance} como."),
+                ("Recipient Balance", f"{recipient.name} now has {recipient_data.balance} como.")
+            ],
+            color=0x00ff00
+        )
+
         await interaction.followup.send(f"# Transfer complete\n{interaction.user.mention} transferred **{amount}** como to {recipient.mention}!")
+
+    @app_commands.command(name="give_random_objekts", description="Give a user a random selection of objekts of a specific rarity.")
+    @app_commands.describe(
+        user="The user to give objekts to.",
+        rarity="The rarity of objekts to give.",
+        amount="The number of objekts to give."
+    )
+    @app_commands.choices(rarity=RARITY_CHOICES)
+    async def give_random_objekts_command(self, interaction: discord.Interaction, user: discord.User, rarity: app_commands.Choice[int], amount: int):
+        await interaction.response.defer()
+
+        if not await self.check_admin_permissions(interaction):
+            return
+        
+        user_id = str(user.id)
+
+        all_objekts = await ObjektModel.filter(rarity=rarity.value).all()
+        owned_objekts = await CollectionModel.filter(user_id=user_id).values_list("objekt_id", flat=True)
+        unowned_objekts = [objekt for objekt in all_objekts if objekt.id not in owned_objekts]
+
+        selected_objekts = self.select_objekts_to_give(unowned_objekts, all_objekts, amount)
+
+        total_como_reward = self.calculate_como_reward(rarity.value, amount)
+
+        await self.perform_objekt_transaction(user_id, selected_objekts, total_como_reward)
+            
+        embed = discord.Embed(
+            title=f"Gave {amount} {rarity.name} objekts to {user.name}",
+            description=f"Added {total_como_reward} como to {user.name}'s balance.",
+            color=0x00ff00
+        )
+        
+        await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="send_duplicates", description="Send duplicate objekts to another user.")
+    @app_commands.describe(recipient="The user to send duplicate objekts to.",
+                           member="Filter by member.",
+                           season="Filter by season.",
+                           rarity="Filter by rarity.",
+                           class_="Filter by class.",
+                           limit="The maximum number of objekts to send at once. (Default is to send all duplicates.)")
+    @app_commands.choices(rarity=RARITY_CHOICES, season=SEASON_CHOICES, class_=CLASS_CHOICES)
+    async def send_duplicates_command(
+        self, interaction: discord.Interaction, recipient: discord.User, member: str | None = None,
+        season: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None,
+        class_: app_commands.Choice[str] | None = None, limit: int | None = None
+    ):
+        await interaction.response.defer()
+
+        sender_id = str(interaction.user.id)
+        recipient_id = str(recipient.id)
+
+        if sender_id == recipient_id:
+            await interaction.followup.send("You cannot send duplicates to yourself!", ephemeral=True)
+            return
+        
+        sender_inventory = await self.fetch_filtered_inventory(sender_id, member, season, rarity, class_)
+        recipient_inventory = await self.fetch_filtered_inventory(recipient_id, member, season, rarity, class_)
+
+        recipient_objekt_ids = {entry.objekt.id for entry in recipient_inventory}
+        duplicates_to_send = [
+            entry for entry in sender_inventory
+            if entry.copies > 1 and entry.objekt.id not in recipient_objekt_ids
+        ]
+
+        if not duplicates_to_send:
+            await interaction.followup.send("No duplicates found to send!", ephemeral=True)
+            return
+        
+        if limit:
+            duplicates_to_send = duplicates_to_send[:limit]
+        
+        embed = await self.create_confirmation_embed(duplicates_to_send, recipient.name)
+        
+        view = self.ConfirmationView(user_id=interaction.user.id)
+        await interaction.followup.send(embed=embed, view=view)
+        await view.wait()
+
+        if view.value is None:
+            await interaction.followup.send("Transaction timed out.", ephemeral=True)
+            return
+        elif not view.value:
+            await interaction.followup.send("Transaction cancelled.", ephemeral=True)
+            return
+        
+        await self. perform_duplicates_transaction(sender_id, recipient_id, duplicates_to_send)
+
+        embed = await self.create_success_embed(interaction.user.name, recipient.name, duplicates_to_send)
+        await interaction.followup.send(embed=embed)
+        
+    @app_commands.command(name="give_como", description="(Admin Only) Give a user a specific amount of como.")
+    @app_commands.describe(user="The user to give como to.",
+                           amount="The amount of como to give.")
+    async def give_como_command(self, interaction: discord.Interaction, user: discord.User, amount: int):
+        await interaction.response.defer()
+
+        if not await self.check_admin_permissions(interaction):
+            return
+
+        if amount <= 0:
+            await interaction.followup.send("The amount of como must be greater than 0.", ephemeral=True)
+            return
+
+        user_data = await self.update_user_balance(user.id, amount)
+
+        embed = await self.create_embed(
+            title="Como Given",
+            description=f"**{interaction.user.mention}** has given **{amount} como** to **{user.mention}**.",
+            fields=[("New Balance", f"{user.name} now has **{user_data.balance} como**.")]
+        )
+
+        await interaction.followup.send(embed=embed)
         
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Utility(bot))
