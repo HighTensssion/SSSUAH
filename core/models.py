@@ -4,7 +4,7 @@ import discord
 from tortoise.models import Model
 from tortoise import fields
 
-__all__ = ("EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel", "ShopModel", "PityModel")
+__all__ = ("EconomyModel", "ObjektModel", "CollectionModel", "CooldownModel", "ShopModel", "PityModel", "TriviaSessionModel", "TriviaStatsModel")
 
 class EconomyModel(Model):
     id: int = fields.BigIntField(pk=True, unique=True)
@@ -70,3 +70,19 @@ class PityModel(Model):
 
     class Meta:
         table = "pity"
+
+class TriviaSessionModel(Model):
+    id = fields.IntField(pk=True)
+    channel_id = fields.BigIntField()
+    user_id = fields.BigIntField()
+    question_index = fields.IntField()
+    started_at = fields.DatetimeField(auto_now_add=True)
+    is_active = fields.BooleanField(default=True)
+
+class TriviaStatsModel(Model):
+    id = fields.IntField(pk=True)
+    user_id = fields.BigIntField(unique=True)
+    correct = fields.IntField(default=0)
+    total = fields.IntField(default=0)
+    streak = fields.IntField(default=0)
+    last_played = fields.DatetimeField(null=True)

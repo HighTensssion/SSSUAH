@@ -10,12 +10,13 @@ from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from core import Bot, EconomyModel, ObjektModel, CollectionModel, CooldownModel, ShopModel, PityModel
-from core.constants import SEASON_CHOICES, BANNER_CHOICES, RARITY_COMO_REWARDS, RARITY_STR_MAPPING
+from core.constants import SEASON_CHOICES, BANNER_CHOICES, RARITY_COMO_REWARDS, RARITY_STR_MAPPING, RARITY_TIERS, SHOP_BUY_VALUES, SORT_CHOICES, CLASS_CHOICES, RARITY_CHOICES
 from tortoise.exceptions import DoesNotExist
 from tortoise.transactions import in_transaction
 from tortoise.expressions import Q
 from tortoise.functions import Max
 from datetime import datetime, timedelta, tzinfo, timezone, time
+import aiohttp
 from .. import Plugin
 from discord import app_commands
 from discord.ext import tasks
@@ -85,7 +86,7 @@ class EconomyPlugin(Plugin):
         color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xFF69B4
         embed = discord.Embed(
             title="Daily Reward!",
-            description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
+            description=f"You received **{como_amount:,} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=color
         )
         if objekt.image_url:
@@ -103,7 +104,7 @@ class EconomyPlugin(Plugin):
         color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xFF69B4
         embed = discord.Embed(
             title="Weekly Reward!",
-            description=f"You received **{como_amount} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
+            description=f"You received **{como_amount:,} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=color
         )
         if objekt.image_url:
@@ -339,6 +340,102 @@ class EconomyPlugin(Plugin):
 
         return embed
 
+    def create_sell_callback(self, user_id: str, rarity: int, leave: int):
+        async def callback(interaction: discord.Interaction):
+            if str(interaction.user.id) != user_id:
+                await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
+                return
+            
+            collection_entries = await CollectionModel.filter(user_id=user_id, objekt__rarity=rarity).prefetch_related("objekt")
+            if not collection_entries:
+                await interaction.response.send_message(f"You have no extra objekts of rarity {rarity} to sell!", ephemeral=True)
+                return
+            
+            total_sold = 0
+            total_value = 0
+            reward_per = RARITY_COMO_REWARDS.get(rarity, 0)
+
+            async with in_transaction():
+                for entry in collection_entries:
+                    if entry.copies > leave:
+                        sell_count = entry.copies - leave
+                        sale_value = (reward_per * 2) * sell_count
+                        total_sold += sell_count
+                        total_value += sale_value
+
+                        entry.copies = leave
+                        if entry.copies == 0:
+                            await entry.delete()
+                        else: 
+                            await entry.save()
+
+                user_data = await self.get_user_data(id=int(user_id))
+                user_data.balance += total_value
+                await user_data.save()
+            
+            if total_sold == 0:
+                await interaction.response.send_message(f"You have no duplicates of rarity {rarity} above the leave limit to sell.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"{interaction.user.name} sold **{total_sold} objekts** of rarity {rarity} for **{total_value}** como.", ephemeral=True)
+            
+        return callback
+
+    async def get_rarity_summary(self, user_id: str, leave: int):
+        collection_entries = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
+        rarity_summary = {}
+        for entry in collection_entries:
+            rarity = entry.objekt.rarity
+            if rarity not in rarity_summary:
+                rarity_summary[rarity] = {"unique": 0, "dupes": 0}
+            rarity_summary[rarity]["unique"] += 1
+            if entry.copies > leave:
+                rarity_summary[rarity]["dupes"] += entry.copies - leave
+        return rarity_summary
+      
+    async def refresh_shop(self):
+        now = datetime.now(tz=timezone.utc)
+        midnight = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
+
+        users = await EconomyModel.all()
+
+        for user in users:
+            user_id = user.id
+            await ShopModel.filter(user_id=user_id).delete()
+
+            items = []
+            for _ in range(6):
+                rarity = random.choice(RARITY_TIERS)
+                objekt = await self.get_random_objekt_by_rarity(rarity)
+                if objekt:
+                    price = SHOP_BUY_VALUES.get(objekt.rarity, 0)
+                    items.append(ShopModel(user_id=user_id, objekt=objekt, price=price))
+            if items:
+                await ShopModel.bulk_create(items)
+
+    def create_purchase_callback(self, shop_item, user):
+        async def callback(interaction:discord.Interaction):
+            if interaction.user != user:
+                await interaction.response.send_message("Open your own shop to purchase!", ephemeral=True)
+                return
+
+            user_data = await self.get_user_data(id=user.id)
+
+            if user_data.balance < shop_item.price:
+                await interaction.response.send_message("You don't have enough como!", ephemeral=True)
+                return
+            
+            await interaction.response.defer()
+            
+            user_data.balance -= shop_item.price
+            await user_data.save()
+            await self.add_objekt_to_user(user.id, shop_item.objekt)
+            
+            await interaction.followup.send(
+                f"{user.mention} successfully purchased **[{shop_item.objekt.member} {shop_item.objekt.season[0] * int(shop_item.objekt.season[-1])}{shop_item.objekt.series}]({shop_item.objekt.image_url})** for **{shop_item.price}** como!", ephemeral=True
+            )
+        
+        return callback
+    
     @app_commands.command(name="balance", description="Show your balance or another user's balance.")
     async def balance_command(self, interaction: discord.Interaction, user: discord.User | None):
         await interaction.response.defer()
@@ -348,7 +445,7 @@ class EconomyPlugin(Plugin):
         
         embed = discord.Embed(
             title="Balance Check",
-            description=f"**{target.mention}** has **{user_data.balance:.0f} como.**",
+            description=f"**{target.mention}** has **{user_data.balance:,.0f} como.**",
             color=0x00FF00
         )
         await interaction.followup.send(embed=embed)
@@ -375,7 +472,7 @@ class EconomyPlugin(Plugin):
         objekt = await self.get_random_objekt_by_rarity(rarity)
         if not objekt:
             await interaction.followup.send(
-                f"You received **{como_amount}** como but no objekts of rarity {rarity} are available in the database.",
+                f"You received **{como_amount:,}** como but no objekts of rarity {rarity} are available in the database.",
                 ephemeral=True
             )
             return
@@ -415,7 +512,7 @@ class EconomyPlugin(Plugin):
 
         if not objekt:
             await interaction.followup.send(
-                f"You received **{como_amount} como**, but no objekts of rarity {chosen_rarity} are available in the database.",
+                f"You received **{como_amount:,} como**, but no objekts of rarity {chosen_rarity} are available in the database.",
                 ephemeral=True
             )
             return
@@ -501,7 +598,7 @@ class EconomyPlugin(Plugin):
         except Exception as e:
             log.error(f"An error occurred in spin_command: {e}")
             await interaction.followup.send("An error occurred while processing your spin. Please try again later.", ephemeral=True)
-            
+
     @spin_command.error
     async def spin_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):
@@ -518,463 +615,53 @@ class EconomyPlugin(Plugin):
         else:
             raise error
 
-    @app_commands.command(name="inv_text", description="View your or another user's inventory in text-only format. Dynamic sort available.")
-    @app_commands.describe(user="The user whose inventory will be displayed. (Leave blank to view your own)",
-                           filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
-                           filter_by_season="Filter the inventory by season.. (Leave blank for no filter)",
-                           filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
-                           ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)")
-    @app_commands.choices(
-        filter_by_season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ],
-        filter_by_class=[
-            app_commands.Choice(name="zero", value="Zero"),
-            app_commands.Choice(name="welcome", value="Welcome"),
-            app_commands.Choice(name="first", value="First"),
-            app_commands.Choice(name="special", value="Special"),
-            app_commands.Choice(name="double", value="Double"),
-            app_commands.Choice(name="customs", value="Never"),
-            app_commands.Choice(name="premier", value="Premier")
-        ]
-    )
-    async def inv_text_command(self, interaction: discord.Interaction, user: discord.User | None = None, filter_by_member: str | None = None, filter_by_season: str | None = None, filter_by_class: str | None = None, ascending: bool | None = False):
-        target = user or interaction.user
-        user_id = str(target.id)
-        prefix = f"Your ({target})" if not user else f"{user}'s"
-
-        await interaction.response.defer()
-
-        query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
-
-        if filter_by_member:
-            query = query.filter(objekt__member=filter_by_member.lower())
-        if filter_by_season:
-            query = query.filter(objekt__season=filter_by_season)
-        if filter_by_class:
-            query = query.filter(objekt__class_=filter_by_class)
-        
-        objekts = await query
-
-        if not objekts:
-            await interaction.followup.send(f"{prefix} inventory is empty!")
-            return
-        
-        objekt_data = [
-            (
-                objekt.objekt.id,
-                objekt.objekt.member,
-                objekt.objekt.season,
-                objekt.objekt.class_,
-                objekt.objekt.series,
-                objekt.objekt.image_url,
-                objekt.objekt.rarity,
-                objekt.copies
-            )
-            for objekt in objekts
-        ]
-
-        items_per_page = 9
-        total_pages = (len(objekt_data) + items_per_page - 1) // items_per_page
-        current_page = 0
-        current_sort = "date"
-
-        def sort_inventory(data, sort_by, ascending):
-            if sort_by  == "member":
-                return sorted(data, key=lambda x: x[1].lower(), reverse=not ascending)
-            elif sort_by == "season":
-                return sorted(data, key=lambda x: x[2].lower(), reverse=not ascending)
-            elif sort_by == "class":
-                return sorted(data, key=lambda x: x[3].lower(), reverse=not ascending)
-            elif sort_by == "series":
-                return sorted(data, key=lambda x: x[4].lower(), reverse=not ascending)
-            elif sort_by == "rarity":
-                return sorted(data, key=lambda x: x[6], reverse=not ascending)
-            elif sort_by == "copies":
-                return sorted(data, key=lambda x: x[7], reverse=not ascending)
-            else:
-                return data
-        
-        def get_page_embed(page, sort_by, ascending):
-            sorted_data = sort_inventory(objekt_data, sort_by, ascending)
-            start = page* items_per_page
-            end = start + items_per_page
-            page_objekts = sorted_data[start:end]
-
-            desc_lines = [
-                f"**{member}** {season[0] * int(season[-1])}{series} x{copies}"
-                for _, member, season, _, series, _, _, copies in page_objekts
-            ]
-
-            embed = discord.Embed(
-                title=f"{prefix} Inventory (Page {page + 1}/{total_pages})",
-                description='\n'.join(desc_lines),
-                color=0xb19cd9
-            )
-            return embed
-        
-        class InventoryView(View):
-            def __init__(self):
-                super().__init__()
-                self.current_page = 0
-                self.current_sort = "date"
-                self.ascending = ascending
-            
-            async def update_embed(self, interaction: discord.Interaction):
-                embed = get_page_embed(self.current_page, self.current_sort, self.ascending)
-                await interaction.response.edit_message(embed=embed, view=self)
-            
-            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
-            async def previous_page(self, interaction: discord.Interaction, button: Button):
-                if self.current_page > 0:
-                    self.current_page -= 1
-                elif self.current_page == 0:
-                    self.current_page = total_pages - 1
-                await self.update_embed(interaction)
-
-            @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.gray)
-            async def next_page(self, interaction: discord.Interaction, button: Button):
-                if self.current_page < total_pages - 1:
-                    self.current_page += 1
-                elif self.current_page == total_pages - 1:
-                    self.current_page = 0
-                await self.update_embed(interaction)
-
-            @discord.ui.button(label="Sort by Member", style=discord.ButtonStyle.blurple)
-            async def sort_by_member(self, interaction: discord.Interaction, button: Button):
-                self.current_sort = "member"
-                await self.update_embed(interaction)
-
-            @discord.ui.button(label="Sort by Season", style=discord.ButtonStyle.blurple)
-            async def sort_by_season(self, interaction: discord.Interaction, button: Button):
-                self.current_sort = "season"
-                await self.update_embed(interaction)
-            
-            @discord.ui.button(label="Sort by Class", style=discord.ButtonStyle.blurple)
-            async def sort_by_class(self, interaction: discord.Interaction, button: Button):
-                self.current_sort = "class"
-                await self.update_embed(interaction)
-            
-            @discord.ui.button(label="Sort by Series", style=discord.ButtonStyle.blurple)
-            async def sort_by_series(self, interaction: discord.Interaction, button: Button):
-                self.current_sort = "series"
-                await self.update_embed(interaction)
-            
-            @discord.ui.button(label="Sort by Rarity", style=discord.ButtonStyle.blurple)
-            async def sort_by_rarity(self, interaction: discord.Interaction, button: Button):
-                self.current_sort = "rarity"
-                await self.update_embed(interaction)
-            
-            @discord.ui.button(label="Sort by Copies", style=discord.ButtonStyle.blurple)
-            async def sort_by_copies(self, interaction: discord.Interaction, button: Button):
-                self.current_sort = "copies"
-                await self.update_embed(interaction)
-            
-            @discord.ui.button(label="Toggle Asc/Desc", style=discord.ButtonStyle.blurple)
-            async def toggle_ascending(self, interaction: discord.Interaction, button: Button):
-                self.ascending = not self.ascending
-                await self.update_embed(interaction)
-
-        embed = get_page_embed(current_page, current_sort, ascending)
-        view = InventoryView()
-        await interaction.followup.send(embed=embed, view=view)     
-
-
-    def create_collage(self, image_urls, filename='collage.png', thumb_size=(130, 200), images_per_row=3):
-        def download_and_process_image(url):
-            try:
-                response = requests.get(url, timeout=5)
-                response.raise_for_status()
-                img = Image.open(BytesIO(response.content))
-                if img.mode != "RGBA":
-                    img = img.convert("RGBA")
-                    # background = Image.new("RGB", img.size, (255, 255, 255))
-                    # background.paste(img, mask=img.split()[3])
-                    # img=background
-                img.thumbnail(thumb_size)
-                return img
-            except Exception as e:
-                print(f"Error loading image from {url}: {e}")
-                return None
-        
-        with ThreadPoolExecutor() as executor:
-            images = list(filter(None, executor.map(download_and_process_image, image_urls)))
-            
-        rows = (len(images) + images_per_row - 1) // images_per_row
-        collage_width = thumb_size[0] * images_per_row
-        collage_height = thumb_size[1] * rows
-        collage = Image.new('RGBA', (collage_width, collage_height), (255, 255, 255, 0))
-
-        for index, img in enumerate(images):
-            x = (index % images_per_row) * thumb_size[0]
-            y = (index // images_per_row) * thumb_size[1]
-            collage.paste(img, (x, y), mask=img.split()[3])
-        
-        collage.save(filename, format='PNG')
-        return filename
-
-    @app_commands.command(name="inv_images", description="View your or another user's inventory.")
-    @app_commands.describe(
-        user="The user whose inventory will be displayed. (Leave blank for your own)",
-        sort_by="The sorting criteria for the inventory.",
-        filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
-        filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
-        filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
-        ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)"
-    )
-    @app_commands.choices(
-        sort_by=[
-            app_commands.Choice(name="Member", value="member"),
-            app_commands.Choice(name="Season", value="season"),
-            app_commands.Choice(name="Class", value="class"),
-            app_commands.Choice(name="Series", value="series"),
-            app_commands.Choice(name="Rarity", value="rarity"),
-            app_commands.Choice(name="Copies", value="copies"),
-        ],
-        filter_by_season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ],
-        filter_by_class=[
-            app_commands.Choice(name="zero", value="Zero"),
-            app_commands.Choice(name="welcome", value="Welcome"),
-            app_commands.Choice(name="first", value="First"),
-            app_commands.Choice(name="special", value="Special"),
-            app_commands.Choice(name="double", value="Double"),
-            app_commands.Choice(name="customs", value="Never"),
-            app_commands.Choice(name="premier", value="Premier")
-        ]
-    )
-    async def inv_command(self,
-                          interaction: discord.Interaction,
-                          user: discord.User | None = None,
-                          sort_by: app_commands.Choice[str] | None = None,
-                          filter_by_member: str | None = None,
-                          filter_by_season: str | None = None,
-                          filter_by_class: str | None = None,
-                          ascending: bool | None = False
-                          ):
-        target = user or interaction.user
-        user_id = str(target.id)
-        prefix = f"Your ({target})" if not user else f"{user}'s"
-
-        await interaction.response.defer()
-
-        query = CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
-
-        if filter_by_member:
-            query = query.filter(objekt__member__iexact=filter_by_member)
-        if filter_by_season:
-            query = query.filter(objekt__season=filter_by_season)
-        if filter_by_class:
-            query = query.filter(objekt__class_=filter_by_class)
-        
-        objekts = await query
-
-        if not objekts:
-            await interaction.followup.send(f"{prefix} inventory is empty!")
-            return
-        
-        objekt_data = [
-            (
-                objekt.objekt.id,
-                objekt.objekt.member,
-                objekt.objekt.season,
-                objekt.objekt.class_,
-                objekt.objekt.series,
-                objekt.objekt.image_url,
-                objekt.objekt.rarity,
-                objekt.updated_at,
-                objekt.copies
-            )
-            for objekt in objekts
-        ]
-
-        sort_by_value = sort_by.value if sort_by else "updated_at"
-
-        def sort_inventory(data, sort_by, ascending):
-            if sort_by == "member":
-                return sorted(data, key=lambda x: x[1].lower(), reverse=not ascending)
-            elif sort_by == "season":
-                return sorted(data, key=lambda x: x[2].lower(), reverse=not ascending)
-            elif sort_by == "class":
-                return sorted(data, key=lambda x: x[3].lower(), reverse=not ascending)
-            elif sort_by == "series":
-                return sorted(data, key=lambda x: x[4].lower(), reverse=not ascending)
-            elif sort_by == "rarity":
-                return sorted(data, key=lambda x: x[6], reverse=not ascending)
-            elif sort_by == "copies":
-                return sorted(data, key=lambda x: x[8], reverse=not ascending)
-            else:
-                return sorted(data, key=lambda x: x[7], reverse=not ascending)
-        
-        sorted_data = sort_inventory(objekt_data, sort_by_value, ascending)
-        image_urls = [url for _, _, _, _, _, url, _, _, _ in sorted_data if url]
-
-        if not image_urls:
-            await interaction.followup.send(f"{prefix} inventory has no images to display!", ephemeral=True)
-            return
-        
-        items_per_page = 9
-        total_pages = (len(objekt_data) + items_per_page - 1) // items_per_page
-        current_page = 0
-
-        def create_collage_for_page(page):
-            start = page * items_per_page
-            end = start + items_per_page
-            page_image_urls = image_urls[start:end]
-            page_objekts = sorted_data[start:end]
-            desc_lines = [
-                f"**{member}** {season[0] * int(season[-1])}{series} x{copies}"
-                for _, member, season, _, series, _, _, _, copies in page_objekts
-            ]
-            description = "\n".join(desc_lines)
-            collage_path = self.create_collage(page_image_urls, filename=f'collage_{target.name}_page_{page}.png')
-            return collage_path, description
-        
-        class InventoryImageView(View):
-            def __init__(self, user_id: int):
-                super().__init__()
-                self.current_page = 0
-                self.user_id = user_id
-                
-            async def update_embed(self, interaction: discord.Interaction):
-                if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
-                    return
-                
-                try:
-                    collage_path, description = create_collage_for_page(self.current_page)
-                    file = discord.File (collage_path, filename="collage.png")
-
-                    embed = discord.Embed(
-                        title=f"{prefix} Inventory (Page {self.current_page + 1}/{total_pages})",
-                        description=f"{description}",
-                        color=0xb19cd9
-                    )
-                    embed.set_image(url="attachment://collage.png")
-
-                    if interaction.response.is_done():
-                        await interaction.followup.send(embed=embed, file=file, view=self)
-                    else:
-                        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
-                    if os.path.exists(collage_path):
-                        os.remove(collage_path)
-                except  discord.errors.NotFound:
-                    await interaction.followup.send("This interaction has expired. Please try again.", ephemeral=True)
-                
-            @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray)
-            async def previous_page(self, interaction: discord.Interaction, button: Button):
-                if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
-                    return
-                
-                if self.current_page > 0:
-                    self.current_page -= 1
-                elif self.current_page == 0:
-                    self.current_page = total_pages - 1
-                await self.update_embed(interaction)
-            
-            @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
-            async def next_page(self, interaction: discord.Interaction, button: Button):
-                if interaction.user.id != self.user_id:
-                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
-                    return
-                
-
-                if self.current_page < total_pages - 1:
-                    self.current_page += 1
-                elif self.current_page == total_pages - 1:
-                    self.current_page = 0
-                await self.update_embed(interaction)
-        
-        collage_path, description = create_collage_for_page(current_page)
-        file = discord.File(collage_path, filename="collage.png")
-        embed= discord.Embed(
-            title=f"{prefix} Inventory (Page {current_page + 1}/{total_pages})",
-            description=f"{description}",
-            color=0xb19cd9
-        )
-        embed.set_image(url="attachment://collage.png")
-
-        view = InventoryImageView(user_id=interaction.user.id)
-        await interaction.followup.send(embed=embed, file=file, view=view)
-
-        if os.path.exists(collage_path):
-            os.remove(collage_path)
-        
     @app_commands.command(name="rob", description="Steal an objekt from another user.")
     @app_commands.describe(target="The user to rob.")
     async def rob_command(self, interaction: discord.Interaction, target: discord.User):
+        await interaction.response.defer()
+
         user_id = str(interaction.user.id)
         target_id = str(target.id)
 
         if target_id == user_id:
-            await interaction.response.send_message("You can't rob yourself!")
+            await interaction.followup.send("You can't rob yourself! masochist.")
             return
         
-        cooldown = await CooldownModel.filter(user_id=user_id, command="rob").first()
         now = datetime.now(tz=timezone.utc)
-
-        cooldowns = {
-            "daily": await CooldownModel.filter(user_id=user_id, command="daily").first(),
-            "weekly": await CooldownModel.filter(user_id=user_id, command="weekly").first(),
-        }
-        reminders = []
-        for command, cd in cooldowns.items():
-            if not cd or cd.expires_at <= now:
-                reminders.append(command.capitalize())
+        cooldown = await self.get_cooldown(user_id, "rob")
 
         if cooldown and cooldown.expires_at > now:
-            remaining = cooldown.expires_at - now
-            minutes, seconds = divmod(remaining.total_seconds(), 60)
-            hours, minutes = divmod(minutes, 60)
-            await interaction.response.send_message(
-                f"You are on cooldown! Try again in {int(hours)}h {int(minutes)}m {int(seconds)}s.",
+            remaining_time = self.format_time_difference(cooldown.expires_at - now)
+            await interaction.followup.send(
+                f"You are on cooldown! Try again in {remaining_time}.",
                 ephemeral=True
             )
             return
+        
+        reminders = await self.get_ready_commands(user_id, now, ["daily", "weekly"])
         
         if random.random() < 0.15:
             user_data = await self.get_user_data(id=interaction.user.id)
             loss_amount = random.randint(100, 200)
             user_data.balance = max(0, user_data.balance - loss_amount)
             await user_data.save()
-
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"{interaction.user.mention} attempted to rob {target.mention} but failed, losing **{loss_amount}** como in the process.\n{interaction.user} now has {user_data.balance} como left."
             )
             return
 
         target_inventory = await CollectionModel.filter(user_id=target_id).prefetch_related("objekt")
-
         if not target_inventory:
-            await interaction.response.send_message(f"{target} has nothing to rob!")
+            await interaction.followup.send(f"{target} has nothing to rob!")
             return
         
         stolen_objekt = random.choice(target_inventory)
-
         target_data = await self.get_user_data(id=target.id)
         user_data = await self.get_user_data(id=interaction.user.id)
         stolen_como = random.randint(50, 200)
-
         if target_data.balance < stolen_como:
             stolen_como = target_data.balance
         
-        target_data.balance -= stolen_como
-        user_data.balance +=  stolen_como
-
         async with in_transaction():
             if stolen_objekt.copies > 1:
                 stolen_objekt.copies -= 1
@@ -983,29 +670,29 @@ class EconomyPlugin(Plugin):
                 await stolen_objekt.delete()
 
             user_entry = await CollectionModel.filter(user_id=user_id, objekt_id=stolen_objekt.objekt.id).first()
-
             if user_entry:
                 user_entry.copies += 1
                 await user_entry.save()
             else:
                 await CollectionModel.create(user_id=user_id, objekt=stolen_objekt.objekt, copies=1)
-            
+
+            target_data.balance -= stolen_como
+            user_data.balance +=  stolen_como
             await target_data.save()
             await user_data.save()
         
         expires_at = now + timedelta(hours=6)
-        if cooldown:
-            cooldown.expires_at = expires_at
-            await cooldown.save()
-        else:
-            await CooldownModel.create(user_id=user_id, command="rob", expires_at=expires_at)
-        
-        response=f"{target.mention}, you have been robbed!\n{interaction.user} stole **{stolen_como} como** and {interaction.user} stole [{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0] * int(stolen_objekt.objekt.season[-1])}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
-        
+        await self.set_cooldown(user_id, "rob", expires_at)
+
+        response = (
+            f"{target.mention}, you have been robbed!\n"
+            f"{interaction.user.mention} stole **{stolen_como} como** and "
+            f"[{stolen_objekt.objekt.member} {stolen_objekt.objekt.season[0] * int(stolen_objekt.objekt.season[-1])}{stolen_objekt.objekt.series}]({stolen_objekt.objekt.image_url}) from you!"
+        )
         if reminders:
             response += f"\nReminder: {', '.join(reminders)} command(s) are ready!"
-
-        await interaction.response.send_message(content=response)
+        
+        await interaction.followup.send(content=response)
 
     @app_commands.command(name="send", description="Send an objekt to another user.")
     @app_commands.describe(
@@ -1014,35 +701,26 @@ class EconomyPlugin(Plugin):
         member="The member whose objekt you wish to send. (Ex. Yooyeon, Nyangkidan)",
         series="The series of the objekt you wish to send. (Ex. 000, 100, 309)"
     )
-    @app_commands.choices(
-        season=[
-            app_commands.Choice(name="atom01", value="Atom01"),
-            app_commands.Choice(name="binary01", value="Binary01"),
-            app_commands.Choice(name="cream01", value="Cream01"),
-            app_commands.Choice(name="divine01", value="Divine01"),
-            app_commands.Choice(name="ever01", value="Ever01"),
-            app_commands.Choice(name="atom02", value="Atom02"),
-            app_commands.Choice(name="customs", value="GNDSG01")
-        ]
-    )
+    @app_commands.choices(season=SEASON_CHOICES)
     async def send_objekt_command(self, interaction:discord.Interaction, recipient: discord.User, season: str, member: str, series: int):
+        await interaction.response.defer()
+
         sender_id = str(interaction.user.id)
         recipient_id = str(recipient.id)
 
         if sender_id == recipient_id:
-            await interaction.response.send_message("You can't send an objekt to yourself!", ephemeral=True)
+            await interaction.followup.send("You can't send an objekt to yourself!", ephemeral=True)
             return
         
         objekt = await ObjektModel.filter(season__iexact=season, member__iexact=member, series=str(series)).first()
         if not objekt:
-            await interaction.response.send_message("Objekt not found!", ephemeral=True)
+            await interaction.followup.send("Objekt not found!", ephemeral=True)
             return
 
         async with in_transaction():
             sender_entry = await CollectionModel.filter(user_id=sender_id, objekt_id=objekt.id).first()
-
             if not sender_entry or sender_entry.copies < 1:
-                await interaction.response.send_message("You don't have that objekt!", ephemeral=True)
+                await interaction.followup.send("You don't have that objekt!", ephemeral=True)
                 return
             
             sender_entry.copies -= 1
@@ -1050,109 +728,40 @@ class EconomyPlugin(Plugin):
                 await sender_entry.delete()
             else:
                 await sender_entry.save()
+
+            await self.add_objekt_to_user(recipient_id, objekt)
             
-            recipient_entry = await CollectionModel.filter(user_id=recipient_id, objekt_id=objekt.id).first()
+        color = int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0xff69b4
+        embed = discord.Embed(
+            title=f"{interaction.user.name} sends an objekt to {recipient.name}!",
+            description=f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
+            color=color
+        )
+        embed.set_image(url=objekt.image_url)
 
-            if recipient_entry:
-                recipient_entry.copies += 1
-                await recipient_entry.save()
-            else:
-                await CollectionModel.create(user_id=recipient_id, objekt_id=objekt.id, copies=1)
+        confirmation_message = (
+            f"{interaction.user.mention} sent **[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})** to {recipient.mention}!"
+        )
 
-        await interaction.response.defer()
-            
-        objekt = await ObjektModel.get(season=season, member__iexact=member, series=series)
-        confirmation_message = f"{interaction.user.mention} successfully sent **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}** to {recipient.mention}!"
-
-        if objekt:
-            if objekt.background_color:
-                color = int(objekt.background_color.replace("#", ""), 16)
-            else:
-                color=0xFF69B4
-
-            embed = discord.Embed(
-                title=f"{interaction.user} sends an objekt to {recipient}!",
-                description=f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
-                color=color
-            )
-            embed.set_image(url=objekt.image_url)
-
-            await interaction.followup.send(content=confirmation_message, embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
-        else:
-            await interaction.followup.send("No objekts found in the database.")
+        await interaction.followup.send(content=confirmation_message, embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
     
-    def create_sell_callback(self, user_id: str, rarity: int, leave: int):
-        async def callback(interaction: discord.Interaction):
-            # Ensure the button is locked to the command caller
-            if str(interaction.user.id) != user_id:
-                await interaction.response.send_message("You cannot use this button. It is locked to the command caller.", ephemeral=True)
-                return
-            # inventory
-            collection_entries = await CollectionModel.filter(user_id=user_id, objekt__rarity=rarity).prefetch_related("objekt")
-            if not collection_entries:
-                await interaction.response.send_message(f"You have no extra objekts of rarity {rarity} to sell!", ephemeral=True)
-                return
-            
-            total_sold = 0
-            total_value = 0
-            rarity_values = {
-                1: 20,
-                2: 100,
-                3: 300,
-                4: 700,
-                5: 1500,
-                6: 4000,
-                7: 100,
-            }
-
-            async with in_transaction():
-                for entry in collection_entries:
-                    if entry.copies > leave:
-                        sell_count = entry.copies - leave
-                        sale_value = rarity_values.get(rarity, 0) * sell_count
-                        total_sold += sell_count
-                        total_value += sale_value
-
-                        entry.copies = leave
-                        if entry.copies == 0:
-                            await entry.delete()
-                        else: 
-                            await entry.save()
-
-                user_data = await self.get_user_data(id=int(user_id))
-                user_data.balance += total_value
-                await user_data.save()
-            
-            await interaction.response.send_message(
-                f"{interaction.user.name} sold **{total_sold} objekts** of rarity {rarity} for **{total_value}** como.", ephemeral=True
-            )
-        
-        return callback
-
     @app_commands.command(name="sell", description="Sell your duplicate objekts for como. (Do not sell rarity 7 dupes, as they may go up in value)")
     @app_commands.describe(
         leave="The number of duplicates to leave in your inventory (only for bulk selling)."
     )
     async def sell_objekt_command(self, interaction: discord.Interaction, leave: int = 1):
+        await interaction.response.defer()
         user_id = str(interaction.user.id)
 
-        # fetch inventory
-        collection_entries = await CollectionModel.filter(user_id=user_id).prefetch_related("objekt")
-        rarity_summary = {}
-        for entry in collection_entries:
-            rarity = entry.objekt.rarity
-            if rarity not in rarity_summary:
-                rarity_summary[rarity] = {"unique": 0, "dupes": 0}
-            rarity_summary[rarity]["unique"] += 1
-            if entry.copies > leave:
-                rarity_summary[rarity]["dupes"] += entry.copies - leave
+        rarity_summary = await self.get_rarity_summary(user_id, leave)
         
         embed = discord.Embed(
             title=f"{interaction.user.name}'s Inventory Overview",
             description="Here is an overview of your inventory by rarity tier:",
             color=0xFFFFFF
         )
-        for rarity, counts in sorted(rarity_summary.items()):
+        for rarity in sorted(rarity_summary.keys()):
+            counts = rarity_summary[rarity]
             embed.add_field(
                 name=f"Rarity {rarity}",
                 value=f"Unique: {counts['unique']} | Dupes above sell limit: {counts['dupes']}",
@@ -1165,70 +774,10 @@ class EconomyPlugin(Plugin):
             button.callback = self.create_sell_callback(user_id, rarity, leave)
             view.add_item(button)
         
-        await interaction.response.send_message(embed=embed, view=view)
+        if not any(rarity_summary[r]["dupes"] > 0 for r in rarity_summary):
+            embed.set_footer(text="You have no duplicates above the leave limit to sell.")
         
-    async def refresh_shop(self):
-        now = datetime.now(tz=timezone.utc)
-        midnight = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
-
-        users = await EconomyModel.all()
-
-        buy_values = {
-            1: 50,
-            2: 150,
-            3: 350,
-            4: 750,
-            5: 2000,
-            6: 10000,
-        }
-        rarity_tiers = [1, 2, 3, 4, 5, 6]
-
-        for user in users:
-            user_id = user.id
-
-            await ShopModel.filter(user_id=user_id).delete()
-
-            items = []
-            for _ in range(6):
-                rarity = random.choice(rarity_tiers)
-                objekts = await ObjektModel.filter(rarity=rarity).all()
-
-                if objekts:
-                    objekt = random.choice(objekts)
-                    price = buy_values.get(objekt.rarity, 0)
-                    items.append(ShopModel(user_id=user_id, objekt=objekt, price=price))
-
-            await ShopModel.bulk_create(items)
-
-    def create_purchase_callback(self, shop_item, user):
-        async def callback(interaction:discord.Interaction):
-            if interaction.user != user:
-                await interaction.response.send_message("Open your own shop to purchase!", ephemeral=True)
-                return
-
-            user_data = await self.get_user_data(id=user.id)
-
-            if user_data.balance < shop_item.price:
-                await interaction.response.send_message("You don't have enough como!", ephemeral=True)
-                return
-            
-            await interaction.response.defer()
-            
-            user_data.balance -= shop_item.price
-            await user_data.save()
-
-            collection_entry = await CollectionModel.filter(user_id=str(user.id), objekt_id=shop_item.objekt.id).first()
-            if collection_entry:
-                collection_entry.copies += 1
-                await collection_entry.save()
-            else:
-                await CollectionModel.create(user_id=str(user.id), objekt_id=shop_item.objekt.id, copies=1)
-            
-            await interaction.followup.send(
-                f"{user.mention} successfully purchased **[{shop_item.objekt.member} {shop_item.objekt.season[0] * int(shop_item.objekt.season[-1])}{shop_item.objekt.series}]({shop_item.objekt.image_url})** for **{shop_item.price}** como!"
-            )
-        
-        return callback
+        await interaction.followup.send(embed=embed, view=view if view.children else None)
 
     @app_commands.command(name="shop", description="View the shop.")
     async def shop_command(self, interaction: discord.Interaction):
@@ -1244,118 +793,126 @@ class EconomyPlugin(Plugin):
         now = datetime.now(tz=timezone.utc)
         next_refresh = datetime.combine(now.date(), time.min, tzinfo=timezone.utc) + timedelta(days=1)
         time_remaining = next_refresh - now
-        hours, remainder = divmod(time_remaining.total_seconds(), 3600)
-        minutes, _ = divmod(remainder, 60)
-        refresh_timer = f"{int(hours)}h {int(minutes)}m"
+        refresh_timer = self.format_time_difference(time_remaining)
         
-        embed = discord.Embed(title=f"{interaction.user.name}'s Shop", color=0x000000)
-        buttons = []
-        for index, item in enumerate(shop_items):
-            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=item.objekt.id).first()
-            if collection_entry:
-                ownership_info = f"Owned: **{collection_entry.copies}** copies."
-            else:
-                ownership_info = "Not Owned"
+        embed = discord.Embed(
+            title=f"{interaction.user.name}'s Shop",
+            description=f"Shop refreshes in: **{refresh_timer}**",
+            color=0x000000
+        )
+
+        view = View()
+        for idx, item in enumerate(shop_items, start=1):
+            objekt = item.objekt
+            collection_entry = await CollectionModel.filter(user_id=str(user_id), objekt_id=objekt.id).first()
+            owned = f"Owned: **{collection_entry.copies}**" if collection_entry else "Not Owned"
             embed.add_field(
-                name=f"{item.objekt.member} {item.objekt.season[0] * int(item.objekt.season[-1])}{item.objekt.series}",
-                value=f"Rarity: {item.objekt.rarity}\nPrice: {item.price} como\n{ownership_info}\n[View Objekt]({item.objekt.image_url})\n\n",
+                name=f"{idx}. {objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}",
+                value=(
+                    f"Rarity: {objekt.rarity}\n"
+                    f"Price: {item.price:,} como\n"
+                    f"{owned}\n"
+                    f"[View Objekt]({objekt.image_url})"
+                ),
                 inline=True
             )
-
-            button = Button(label=f"Buy obj. {index + 1}", style=discord.ButtonStyle.blurple)
+            button = Button(label=f"Buy #{idx}", style=discord.ButtonStyle.blurple)
             button.callback = self.create_purchase_callback(item, interaction.user)
-            buttons.append(button)
-        
-        embed.set_footer(text=f"Shop refreshes in: {refresh_timer}")
-        
-        view = View()
-        for index, button in enumerate(buttons):
-            button.row = index // 3
+            button.row = (idx - 1) // 3
             view.add_item(button)
-        
+
         await interaction.followup.send(embed=embed, view=view)
     
     @app_commands.command(name="slots", description="Bet your como and spin the slot machine!")
     @app_commands.describe(
-        bet="The amount of como to bet on the slot machine."
+        bet="The amount of como to bet on the slot machine, or 'all' to go all in."
     )
     @app_commands.checks.cooldown(1, 10, key=lambda i: (i.user.id,))
-    async def slots_command(self, interaction: discord.Interaction, bet: int):
+    async def slots_command(self, interaction: discord.Interaction, bet: str):
         await interaction.response.defer()
 
         user_id = interaction.user.id
-
-        # check valid bet
-        if bet <= 0:
-            await interaction.followup.send("Your bet must be greater than 0!", ephemeral=True)
-            return
-        
         user_data = await self.get_user_data(id=user_id)
 
-        # check bet vs balance
-        if user_data.balance < bet:
-            await interaction.followup.send("You don't have enough como to place this bet!", ephemeral=True)
+        if isinstance(bet, str) and bet.lower() in ("all", "max", "all in"):
+            bet_amount = user_data.balance
+        else:
+            try:
+                bet_amount = int(bet)
+            except (ValueError, TypeError):
+                await interaction.followup.send("Invalid bet amount! Please enter a valid number or 'all'.", ephemeral=True)
+                return
+
+        # check valid bet
+        if bet_amount <= 0:
+            await interaction.followup.send("Your bet must be greater than 0!", ephemeral=True)
+            return
+        if user_data.balance < bet_amount:
+            await interaction.followup.send("You don't have enough como to place this bet! Broke ahh")
             return
         
-        user_data.balance -= bet
+        user_data.balance -= bet_amount
         await user_data.save()
 
         # slot machine definition
         symbols = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
-        reel_1_weights = [0.6, 0.2, 0.1, 0.05, 0.04, 0.01]  # Higher chance for common symbols
-        reel_2_weights = [0.1, 0.5, 0.2, 0.1, 0.08, 0.02]
-        reel_3_weights = [0.05, 0.1, 0.5, 0.15, 0.08, 0.02]
-
-        reel_1 = random.choices(symbols, reel_1_weights)[0]
-        reel_2 = random.choices(symbols, reel_2_weights)[0]
-        reel_3 = random.choices(symbols, reel_3_weights)[0]
-
-        result = [reel_1, reel_2, reel_3]
-        payout = 0
-
+        reel_weights = [
+            [0.6, 0.2, 0.1, 0.05, 0.04, 0.01],
+            [0.1, 0.5, 0.2, 0.1, 0.08, 0.02],
+            [0.05, 0.1, 0.5, 0.15, 0.08, 0.02],
+        ]
         payout_multipliers = {
-            "🍒": 3,  # Common symbol, lower payout
+            "🍒": 3,  
             "🍋": 4,
             "🍊": 5,
             "🍇": 6,
             "⭐": 7,
-            "💎": 10  # Rare symbol, higher payout
+            "💎": 10  
         }
 
-        if result.count(reel_1) == 3:
-            payout = bet * payout_multipliers[reel_1]
-        elif result.count(reel_1) == 2 or result.count(reel_2) == 2:
-            payout = bet * 2
+        reels = [random.choices(symbols, w)[0] for w in reel_weights]
+        result = reels
+        payout = 0
+
+        if result.count(result[0]) == 3:
+            payout = bet_amount * payout_multipliers[result[0]]
+        elif result.count(result[0]) == 2 or result.count(result[1]) == 2:
+            payout = bet_amount * 2
         
         user_data.balance += payout
         await user_data.save()
 
-        if bet > 0:
-            payout_ratio = payout // bet if bet > 0 else 0
-        else:
-            payout_ratio = 0
+        payout_ratio = payout // bet_amount if bet_amount > 0 else 0
 
         # slots display
-        slot_display = f"🎰 **SLOTS** 🎰\n| {reel_1} | {reel_2} | {reel_3} |\n"
+        slot_display = f"| {result[0]} | {result[1]} | {result[2]} |"
+
+        embed = discord.Embed(
+            title="🎰 SLOTS 🎰",
+            description=slot_display,
+            color=0xffd700 if payout > 0 else 0x888888
+        )
 
         if payout_ratio == 3:
-            result_message = f"🎉Win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉Win! {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         elif payout_ratio == 4:
-            result_message = f"🎉 Small win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉 Small win! {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         elif payout_ratio == 5:
-            result_message = f"🎉 Big win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉 Big win! {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         elif payout_ratio == 6:
-            result_message = f"🎉 Huge win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉 Huge win! {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         elif payout_ratio == 7:
-            result_message = f"🎉 Tremendous win! {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉 Tremendous win! {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         elif payout_ratio == 10:
-            result_message = f"🎉 JACKPOT!!! {interaction.user.mention} bet {bet} como and wins **{payout} como**!!! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉 JACKPOT!!! {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**!!! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         elif payout_ratio == 2:
-            result_message = f"🎉 {interaction.user.mention} bet {bet} como and wins **{payout} como**! 🎉\n {interaction.user} now has {user_data.balance} como."
+            result_message = f"🎉 {interaction.user} bet {bet_amount:,} como and wins **{payout:,} como**! 🎉\n {interaction.user} now has {user_data.balance:,} como."
         else: 
-            result_message = f"😢 {interaction.user.mention} bet {bet} como and lost, leaving them with {user_data.balance} como... Better luck next time..."
+            result_message = f"😢 {interaction.user} bet {bet_amount:,} como and lost, leaving them with {user_data.balance:,} como... Better luck next time..."
         
-        await interaction.followup.send(f"{slot_display}\n\n{result_message}")
+        embed.add_field(name="Result", value=result_message, inline=False)
+
+        await interaction.followup.send(content=f"{interaction.user.mention}", embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
     
     @slots_command.error
     async def slots_error(self, interaction: discord.Interaction, error):

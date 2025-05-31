@@ -165,10 +165,10 @@ class Utility(Plugin):
         for rank, entry in enumerate(leaderboard_data[:10], start=1):
             if mode and mode.value == "copies":
                 user_id, user_name, total_copies = entry
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies}** copies held", inline=False)
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies:,}** copies held", inline=False)
             else:
                 user_id, user_name, percent_complete, collected_count, total_count = entry
-                embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count}/{total_count})** | **{percent_complete:.2f}%** complete", inline=False)
+                embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count:,}/{total_count:,})** | **{percent_complete:.2f}%** complete", inline=False)
 
     def select_objekts_to_give(self, unowned_objekts, all_objekts, amount):
         if len(unowned_objekts) >= amount:
@@ -280,6 +280,45 @@ class Utility(Plugin):
             self.value = False
             await interaction.response.defer()
             self.stop()
+
+    async def create_collage(self, image_urls: list, filename='collage.png') -> tuple[str, str]:
+        base_dir = "collage"
+        os.makedirs(base_dir, exist_ok=True)
+        filename = os.path.join(base_dir, filename)
+
+        thumb_size = (130, 200)
+        grid_size = (3, 3)
+        collage_width = (thumb_size[0] * grid_size[0])
+        collage_height = (thumb_size[1] * grid_size[1])
+
+        background_color = (0, 0, 0, 0)
+        collage = Image.new('RGBA', (collage_width, collage_height), background_color)
+
+        async with aiohttp.ClientSession() as session:
+            for index, objekt in enumerate(image_urls):
+                try:
+                    async with session.get(objekt.image_url, timeout=10) as response:
+                        response.raise_for_status()
+                        img_data = await response.read()
+                        img = Image.open(BytesIO(img_data))
+                        if img.mode != "RGBA":
+                            img = img.convert("RGBA")
+                        img.thumbnail(thumb_size)
+
+                        x = (index % grid_size[0]) * thumb_size[0]
+                        y = (index // grid_size[0]) * thumb_size[1]
+                        collage.paste(img, (x, y), mask=img.split()[3])
+                except Exception as e:
+                    print(f"Error loading image from {getattr(objekt, 'image_url', None)}: {e}")
+        
+        collage.save(filename, format='PNG')
+        
+        names = [f"**{getattr(objekt, 'member', '')}**" for objekt in image_urls]
+        description = "\n".join(
+            [", ".join(names[i:i + grid_size[0]]) for i in range(0, len(names), grid_size[0])]
+        )
+
+        return filename, description
 
     @app_commands.command(name='ping', description="Shows the bot's latency.")
     async def ping_command(self, interaction: Interaction):
@@ -522,7 +561,7 @@ class Utility(Plugin):
             user_name = user.name if user else "Unknown User"
             embed.add_field(
                 name=f"#{rank} {user.name}",
-                value=f"Total Como: {balance}",
+                value=f"Total Como: {balance:,}",
                 inline=False
             )
 
@@ -552,7 +591,7 @@ class Utility(Plugin):
         if member:
             query = query.filter(member__iexact=member)
         if season:
-            query = query.filter(season=season.value)
+            query = query.filter(season__iexact=season.value)
         
         total_objekts = await query.all()
         total_objekts_ids = [objekt.id for objekt in total_objekts]
@@ -568,12 +607,13 @@ class Utility(Plugin):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="collection_percentage", description="View your collection completion percentage.")
-    @app_commands.describe(user="Indicate who's collection to view. (Leave blank to view your own)",
-                           member="View your collection for a specific member. (Cannot be used in conjunction with series filter)",
-                           season="View your collection for a specifc season.",
-                           class_="View your collection for a specific class of objekts",
-                           rarity="View your collection for a specific rarity of objekts",
-                           series="View your collection for a specific series of objekts (Requires season filter.)")
+    @app_commands.describe(
+        user="Indicate who's collection to view. (Leave blank to view your own)",
+        member="View your collection for a specific member. (Cannot be used in conjunction with series filter)",
+        season="View your collection for a specifc season.",
+        class_="View your collection for a specific class of objekts",
+        rarity="View your collection for a specific rarity of objekts",
+        series="View your collection for a specific series of objekts (Requires season filter.)")
     @app_commands.choices(season=SEASON_CHOICES, class_=CLASS_CHOICES, rarity=RARITY_CHOICES)
     async def collection_percentage_command(self, interaction: discord.Interaction, user: discord.User | None = None, member: str | None = None, season: app_commands.Choice[str] | None = None, class_: app_commands.Choice[str] | None = None, rarity: app_commands.Choice[int] | None = None, series: str | None = None):
         await interaction.response.defer()
@@ -650,7 +690,7 @@ class Utility(Plugin):
 
             embed = discord.Embed(
                 title=title,
-                description=f"Collection Progress: **{collection_percentage:.2f}%** ({collected_count}/{total_count})",
+                description=f"Collection Progress: **{collection_percentage:.2f}%** ({collected_count:,}/{total_count:,})",
                 color=0x008800
             )
             embed.add_field(name="Collected", value="\n".join(collected_details) or "None", inline=True)
@@ -907,15 +947,15 @@ class Utility(Plugin):
 
         embed= await self.create_embed(
             title="Transfer Confirmation",
-            description=f"{interaction.user.name} transferred {amount} como to {recipient.name}.",
+            description=f"{interaction.user.name} transferred {amount:,} como to {recipient.name}.",
             fields=[
-                ("Sender Balance", f"{interaction.user.name} now has {sender_data.balance} como."),
-                ("Recipient Balance", f"{recipient.name} now has {recipient_data.balance} como.")
+                ("Sender Balance", f"{interaction.user.name} now has {sender_data.balance:,} como."),
+                ("Recipient Balance", f"{recipient.name} now has {recipient_data.balance:,} como.")
             ],
             color=0x00ff00
         )
 
-        await interaction.followup.send(f"# Transfer complete\n{interaction.user.mention} transferred **{amount}** como to {recipient.mention}!")
+        await interaction.followup.send(f"# Transfer complete\n{interaction.user.mention} transferred **{amount:,}** como to {recipient.mention}!")
 
     @app_commands.command(name="give_random_objekts", description="Give a user a random selection of objekts of a specific rarity.")
     @app_commands.describe(
@@ -943,7 +983,7 @@ class Utility(Plugin):
         await self.perform_objekt_transaction(user_id, selected_objekts, total_como_reward)
             
         embed = discord.Embed(
-            title=f"Gave {amount} {rarity.name} objekts to {user.name}",
+            title=f"Gave {amount:,} {rarity.name} objekts to {user.name}",
             description=f"Added {total_como_reward} como to {user.name}'s balance.",
             color=0x00ff00
         )
@@ -1023,11 +1063,316 @@ class Utility(Plugin):
 
         embed = await self.create_embed(
             title="Como Given",
-            description=f"**{interaction.user.mention}** has given **{amount} como** to **{user.mention}**.",
-            fields=[("New Balance", f"{user.name} now has **{user_data.balance} como**.")]
+            description=f"**{interaction.user.mention}** has given **{amount:,} como** to **{user.mention}**.",
+            fields=[("New Balance", f"{user.name} now has **{user_data.balance:,} como**.")]
         )
 
         await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="inv_images", description="View your or another user's inventory.")
+    @app_commands.describe(
+        user="The user whose inventory will be displayed. (Leave blank for your own)",
+        sort_by="The sorting criteria for the inventory.",
+        filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
+        filter_by_season="Filter the inventory by season. (Leave blank for no filter)",
+        filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
+        filter_by_rarity="Filter the inventory by rarity. (Leave blank for no filter)",
+        ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)"
+    )
+    @app_commands.choices(sort_by=SORT_CHOICES, filter_by_season=SEASON_CHOICES, filter_by_class=CLASS_CHOICES, filter_by_rarity=RARITY_CHOICES)
+    async def inv_command(
+        self, interaction: discord.Interaction, user: discord.User | None = None,
+        sort_by: app_commands.Choice[str] | None = None, filter_by_member: str | None = None,
+        filter_by_season: app_commands.Choice[str] | None = None, filter_by_class: app_commands.Choice[str] | None = None,
+        filter_by_rarity: app_commands.Choice[int] | None = None,  ascending: bool | None = False
+    ):
+        target = user or interaction.user
+        user_id = str(target.id)
+        prefix = f"Your ({target})" if not user else f"{user}'s"
+
+        await interaction.response.defer()
+
+        inventory = await self.fetch_filtered_inventory(
+            user_id, filter_by_member, filter_by_season, filter_by_rarity, filter_by_class
+        )
+
+        if not inventory:
+            await interaction.followup.send(f"{prefix} inventory is empty!")
+            return
         
+        objekt_data = [
+            (
+                entry.objekt.id,
+                entry.objekt.member,
+                entry.objekt.season,
+                entry.objekt.class_,
+                entry.objekt.series,
+                entry.objekt.image_url,
+                entry.objekt.rarity,
+                entry.updated_at,
+                entry.copies,
+                entry.objekt
+            )
+            for entry in inventory
+        ]
+
+        sort_by_value = sort_by.value if sort_by else "updated_at"
+
+        def sort_inventory(data, sort_by, ascending):
+            sort_key_map = {
+                "member": lambda x: x[1].lower(),
+                "season": lambda x: x[2].lower(),
+                "class": lambda x: x[3].lower(),
+                "series": lambda x: x[4].lower(),
+                "rarity": lambda x: x[6],
+                "copies": lambda x: x[8],
+                "updated_at": lambda x: x[7],
+            }
+            return sorted(data, key=sort_key_map.get(sort_by, sort_key_map["updated_at"]), reverse=not ascending)
+        
+        sorted_data = sort_inventory(objekt_data, sort_by_value, ascending)
+        items_per_page = 9
+        total_pages = (len(sorted_data) + items_per_page - 1) // items_per_page
+        current_page = 0
+
+        async def create_collage_for_page(page):
+            start = page * items_per_page
+            end = start + items_per_page
+            page_objekts = sorted_data[start:end]
+            collage_filename = f'collage_{target.name}_page_{page}.png'
+            filename, _ = await self.create_collage([obj[-1] for obj in page_objekts], filename=collage_filename)
+            desc_lines = [
+                f"**{member}** {season[0] * int(season[-1])}{series} x{copies}"
+                for _, member, season, _, series, _, _, _, copies, _ in page_objekts
+            ]
+            description = "\n".join(desc_lines)
+            return filename, description
+        
+        class InventoryImageView(View):
+            def __init__(self, user_id: int):
+                super().__init__()
+                self.current_page = 0
+                self.user_id = user_id
+            
+            async def update_embed(self, interaction: discord.Interaction):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                try:
+                    collage_path, description = await create_collage_for_page(self.current_page)
+                    with open(collage_path, "rb") as f:
+                        file = discord.File(f, filename="collage.png")
+                        embed = discord.Embed(
+                            title=f"{prefix} Inventory (Page {self.current_page + 1}/{total_pages})",
+                            description=description,
+                            color=0xb19cd9
+                        )
+                        embed.set_image(url="attachment://collage.png")
+                        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+                    if os.path.exists(collage_path):
+                        os.remove(collage_path)
+                except discord.errors.NotFound:
+                    await interaction.followup.send("This interaction has expired. Please try again.", ephemeral=True)
+
+            @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_page = (self.current_page - 1) % total_pages
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_page = (self.current_page + 1) % total_pages
+                await self.update_embed(interaction)
+            
+        collage_path, description = await create_collage_for_page(current_page)
+        with open(collage_path, "rb") as f:
+            file = discord.File(f, filename="collage.png")
+            embed = discord.Embed(
+                title=f"{prefix} Inventory (Page {current_page + 1}/{total_pages})",
+                description=description,
+                color=0xb19cd9
+            )
+            embed.set_image(url="attachment://collage.png")
+
+            view = InventoryImageView(user_id=interaction.user.id)
+            await interaction.followup.send(embed=embed, file=file, view=view)
+        if os.path.exists(collage_path):
+            os.remove(collage_path)
+
+    @app_commands.command(name="inv_text", description="View your or another user's inventory in text-only format. Dynamic sort available.")
+    @app_commands.describe(
+        user="The user whose inventory will be displayed. (Leave blank to view your own)",
+        sort_by="The  initial sorting criteria. (Leave blank for default sort)",
+        filter_by_member="Filter the inventory by member. (Leave blank for no filter)",
+        filter_by_season="Filter the inventory by season.. (Leave blank for no filter)",
+        filter_by_class="Filter the inventory by class. (Leave blank for no filter)",
+        filter_by_rarity="Filter the inventory by rarity. (Leave blank for no filter)",
+        ascending="Sort the inventory in ascending order. (Leave blank to sort in descending order)")
+    @app_commands.choices(sort_by=SORT_CHOICES, filter_by_season=SEASON_CHOICES, filter_by_class=CLASS_CHOICES, filter_by_rarity=RARITY_CHOICES)
+    async def inv_text_command(
+        self, interaction: discord.Interaction, user: discord.User | None = None,
+        sort_by: app_commands.Choice[str] | None = None, filter_by_member: str | None = None,
+        filter_by_season: app_commands.Choice[str] | None = None, filter_by_class: app_commands.Choice[str] | None = None,
+        filter_by_rarity: app_commands.Choice[int] | None = None,  ascending: bool | None = False
+    ):
+        target = user or interaction.user
+        user_id = str(target.id)
+        prefix = f"Your ({target})" if not user else f"{user}'s"
+
+        await interaction.response.defer()
+
+        inventory = await self.fetch_filtered_inventory(
+            user_id, filter_by_member, filter_by_season, filter_by_rarity, filter_by_class
+        )
+
+        if not inventory:
+            await interaction.followup.send(f"{prefix} inventory is empty!")
+            return
+        
+        objekt_data = [
+            (
+                entry.objekt.id,
+                entry.objekt.member,
+                entry.objekt.season,
+                entry.objekt.class_,
+                entry.objekt.series,
+                entry.objekt.image_url,
+                entry.objekt.rarity,
+                entry.copies,
+                entry.objekt
+            )
+            for entry in inventory
+        ]
+
+        items_per_page = 9
+        total_pages = (len(objekt_data) + items_per_page - 1) // items_per_page
+        current_page = 0
+        current_sort = sort_by.value if sort_by else "updated_at"
+
+        def sort_inventory(data, sort_by, ascending):
+            sort_key_map = {
+                "member": lambda x: MEMBER_PRIORITY.get(x[1], float('inf')),
+                "season": lambda x: x[2].lower(),
+                "class": lambda x: x[3].lower(),
+                "series": lambda x: x[4].lower(),
+                "rarity": lambda x: x[6],
+                "copies": lambda x: x[7],
+                "updated_at": lambda x: x[0],
+            }
+            return sorted(data, key=sort_key_map.get(sort_by, sort_key_map["updated_at"]), reverse=not ascending)
+        
+        def get_page_embed(page, sort_by, ascending):
+            sorted_data = sort_inventory(objekt_data, sort_by, ascending)
+            start = page * items_per_page
+            end = start + items_per_page
+            page_objekts = sorted_data[start:end]
+
+            desc_lines = [
+                f"**{member}** {season[0] * int(season[-1])}{series} x{copies}"
+                for _, member, season, _, series, _, _, copies, _ in page_objekts
+            ]
+
+            embed = discord.Embed(
+                title=f"{prefix} Inventory (Page {page + 1}/{total_pages})",
+                description='\n'.join(desc_lines) if desc_lines else "No items on this page.",
+                color=0xb19cd9
+            )
+            embed.set_footer(text=f"Sort: {sort_by} | {'Ascending' if ascending else 'Descending'}")
+            return embed
+        
+        class InventoryView(View):
+            def __init__(self, user_id: int):
+                super().__init__()
+                self.current_page = 0
+                self.current_sort = current_sort
+                self.ascending = ascending
+                self.user_id = user_id
+            
+            async def update_embed(self, interaction: discord.Interaction):
+                embed = get_page_embed(self.current_page, self.current_sort, self.ascending)
+                await interaction.response.edit_message(embed=embed, view=self)
+            
+            @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.gray)
+            async def previous_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_page = (self.current_page - 1) % total_pages
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+            async def next_page(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_page = (self.current_page + 1) % total_pages
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="Sort by Member", style=discord.ButtonStyle.blurple)
+            async def sort_by_member(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_sort = "member"
+                await self.update_embed(interaction)
+
+            @discord.ui.button(label="Sort by Season", style=discord.ButtonStyle.blurple)
+            async def sort_by_season(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_sort = "season"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Class", style=discord.ButtonStyle.blurple)
+            async def sort_by_class(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_sort = "class"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Series", style=discord.ButtonStyle.blurple)
+            async def sort_by_series(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_sort = "series"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Rarity", style=discord.ButtonStyle.blurple)
+            async def sort_by_rarity(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_sort = "rarity"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Sort by Copies", style=discord.ButtonStyle.blurple)
+            async def sort_by_copies(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.current_sort = "copies"
+                await self.update_embed(interaction)
+            
+            @discord.ui.button(label="Toggle Asc/Desc", style=discord.ButtonStyle.blurple)
+            async def toggle_ascending(self, interaction: discord.Interaction, button: Button):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message("You cannot use these buttons. They are locked to the command caller.", ephemeral=True)
+                    return
+                self.ascending = not self.ascending
+                await self.update_embed(interaction)
+
+        embed = get_page_embed(current_page, current_sort, ascending)
+        view = InventoryView(user_id=interaction.user.id)
+        await interaction.followup.send(embed=embed, view=view)
+
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Utility(bot))

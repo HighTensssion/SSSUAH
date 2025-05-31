@@ -103,3 +103,13 @@ RARITY_STR_MAPPING = {
     6: "n Ultra Rare ",
     7: "n ",
 }
+
+RARITY_TIERS = [1, 2, 3, 4, 5, 6]
+SHOP_BUY_VALUES = {
+    1: 50,
+    2: 150,
+    3: 350,
+    4: 750,
+    5: 2000,
+    6: 10000,
+}
