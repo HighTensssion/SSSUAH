@@ -56,7 +56,7 @@ class Bot(commands.AutoShardedBot):
         self.add_command(reload)
 
     async def on_ready(self) -> None:
-        log.info(f"Locgged in as {self.user} (ID: {self.user.id})")
+        log.info(f"Logged in as {self.user} (ID: {self.user.id})")
         for guild in self.guilds:
             log.info(f"{guild.name} ({guild.id})")
 

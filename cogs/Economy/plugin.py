@@ -22,6 +22,8 @@ from discord import app_commands
 from discord.ext import tasks
 from discord.ui import View, Button
 
+__all__ = ("update_user_balance", "add_objekt_to_user")
+
 class EconomyPlugin(Plugin):
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
