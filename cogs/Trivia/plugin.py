@@ -11,12 +11,13 @@ from .. import Plugin
 
 TRIVIA_BASE_COMO = 100
 TRIVIA_STREAK_BONUS = 50
-TRIVIA_MAX_RARITY = 6
+TRIVIA_MAX_COMO = 10000
+TRIVIA_MAX_RARITY = 5
 TRIVIA_STREAKS_PER_RARITY = 5
 
 class TriviaView(discord.ui.View):
     def __init__(self, question, correct_index, session_id, user_id, plugin):
-        super().__init__(timeout=60)
+        super().__init__(timeout=15)
         self.correct_index = correct_index
         self.session_id = session_id
         self.user_id = user_id
@@ -119,14 +120,20 @@ class TriviaPlugin(Plugin):
                 stats.correct += 1
                 stats.streak = (stats.streak or 0) + 1
 
-                como_reward = TRIVIA_BASE_COMO + (stats.streak - 1) * TRIVIA_STREAK_BONUS
+                como_reward = min(TRIVIA_BASE_COMO + (stats.streak - 1) * TRIVIA_STREAK_BONUS, TRIVIA_MAX_COMO)
                 await economy_cog.update_user_balance(user_id, como_reward)
+                
 
-                objekt_rarity = min(stats.streak // TRIVIA_STREAKS_PER_RARITY, TRIVIA_MAX_RARITY)
+                if stats.streak % 50 == 0:
+                    objekt_rarity = TRIVIA_MAX_RARITY + 1
+                else:
+                    objekt_rarity = min(stats.streak // TRIVIA_STREAKS_PER_RARITY, TRIVIA_MAX_RARITY)
+
                 objekts = await ObjektModel.filter(rarity=objekt_rarity).all()
                 if objekts:
                     objekt = random.choice(objekts)
                     await economy_cog.add_objekt_to_user(user_id, objekt)
+                    count = await economy_cog.get_objekt_count(user_id, objekt)
                     objekt_msg = f"\n🎁 You also received a random rarity {objekt_rarity} objekt: **[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})**!"
 
                     color = int(objekt.background_color.replace("#", ""), 16) if getattr(objekt, "background_color", None) else 0x0f0
@@ -140,6 +147,7 @@ class TriviaPlugin(Plugin):
                     )
                     if objekt.image_url:
                         embed.set_image(url=objekt.image_url)
+                    embed.set_footer(text=f"You now have {count} copies of this objekt!")
                 else:
                     objekt_msg = "\nNo objekt reward available at the moment."
                     embed = discord.Embed(

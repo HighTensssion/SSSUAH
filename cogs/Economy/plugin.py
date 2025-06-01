@@ -438,6 +438,10 @@ class EconomyPlugin(Plugin):
         
         return callback
     
+    async def get_objekt_count(self, user_id, objekt):
+        entry = await CollectionModel.get_or_none(user_id=user_id, objekt=objekt)
+        return entry.copies if entry else 1
+
     @app_commands.command(name="balance", description="Show your balance or another user's balance.")
     async def balance_command(self, interaction: discord.Interaction, user: discord.User | None):
         await interaction.response.defer()
