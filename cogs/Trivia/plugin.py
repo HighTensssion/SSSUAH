@@ -51,6 +51,7 @@ class TriviaView(discord.ui.View):
         await self._handle(interaction, 3)
 
     async def _handle(self, interaction: discord.Interaction, index: int):
+        await interaction.response.defer()
         await self.plugin.handle_trivia_answer(interaction, self.session_id, index)
 
 class TriviaPlugin(Plugin):
@@ -62,11 +63,12 @@ class TriviaPlugin(Plugin):
     @app_commands.command(name="trivia", description="Answer a trivia question for a como and objekt reward!")
     @app_commands.checks.cooldown(1, 60, key=lambda i: (i.user.id,))
     async def trivia_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         user_id = interaction.user.id
 
         session = await TriviaSessionModel.filter(user_id=user_id, is_active=True).first()
         if session:
-            await interaction.response.send_message("You already have an active trivia question!", ephemeral=True)
+            await interaction.followup.send("You already have an active trivia question!", ephemeral=True)
             return
         
         question_index = random.randint(0, len(self.questions) - 1)
@@ -97,12 +99,12 @@ class TriviaPlugin(Plugin):
             embed.add_field(name="\u200b", value=line, inline=True)
         
         view = TriviaView(question, correct_index, session.id, user_id, self)
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.followup.send(embed=embed, view=view)
     
     async def handle_trivia_answer(self, interaction, session_id, selected_index):
         session = await TriviaSessionModel.get_or_none(id=session_id)
         if not session or not session.is_active:
-            await interaction.response.send_message("This trivia session is no longer active.", ephemeral=True)
+            await interaction.followup.send("This trivia session is no longer active.", ephemeral=True)
             return
         
         question = self.questions[session.question_index]
@@ -158,12 +160,12 @@ class TriviaPlugin(Plugin):
                         ),
                         color=0x0f0
                     )
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
             else:
                 stats.streak = 0
-                await interaction.response.send_message(f"❌ Sorry, {interaction.user.name} Incorrect! Better luck next time!")
+                await interaction.followup.send(f"❌ Sorry, {interaction.user.name} Incorrect! Better luck next time!")
         else:
-            await interaction.response.send_message("Economy system is not available.", ephemeral=True)
+            await interaction.followup.send("Economy system is not available.", ephemeral=True)
             return
 
         await stats.save()

@@ -10,6 +10,7 @@ class EconomyModel(Model):
     id: int = fields.BigIntField(pk=True, unique=True)
     balance: int = fields.BigIntField(default=100)
     created_at = fields.DatetimeField(auto_now=True)
+    updated_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta: table = "economy"
 

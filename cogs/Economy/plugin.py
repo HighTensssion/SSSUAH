@@ -842,6 +842,8 @@ class EconomyPlugin(Plugin):
 
         if isinstance(bet, str) and bet.lower() in ("all", "max", "all in"):
             bet_amount = user_data.balance
+        elif isinstance(bet, str) and bet.lower() in ("half"):
+            bet_amount = (user_data.balance // 2)
         else:
             try:
                 bet_amount = int(bet)

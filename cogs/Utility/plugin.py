@@ -13,7 +13,7 @@ from .. import Plugin
 from datetime import datetime, timezone
 from tortoise.transactions import in_transaction
 from core import Bot, Embed, CooldownModel, PityModel, ObjektModel, CollectionModel, EconomyModel
-from core.constants import SEASON_CHOICES, RARITY_MAPPING, MEMBER_PRIORITY, CLASS_CHOICES, RARITY_CHOICES, SORT_CHOICES, RARITY_COMO_REWARDS
+from core.constants import SEASON_CHOICES, RARITY_MAPPING, MEMBER_PRIORITY, CLASS_CHOICES, RARITY_CHOICES, SORT_CHOICES, RARITY_COMO_REWARDS, SLURS
 from discord import Interaction, app_commands
 from discord.ext.commands import is_owner
 from discord.ui import View, Button
@@ -128,6 +128,9 @@ class Utility(Plugin):
             return (r, g, b, 255)
         return (255, 255, 255, 255)
 
+    def safe_updated_at(self, dt):
+        return dt or datetime.max.replace(tzinfo=timezone.utc)
+
     async def generate_leaderboard_data(self, users, total_objekts_ids, mode):
         leaderboard_data = []
         for user in users:
@@ -137,17 +140,23 @@ class Utility(Plugin):
 
             collected_objekts = await CollectionModel.filter(user_id=user_id, objekt__id__in=total_objekts_ids).prefetch_related("objekt")
 
+            try:
+                economy_entry = await EconomyModel.get(id=user_id)
+                updated_at = economy_entry.updated_at
+            except Exception:
+                updated_at = None
+
             if mode and mode.value == "copies":
                 total_copies = sum(entry.copies for entry in collected_objekts)
-                leaderboard_data.append((user_id, user_name, total_copies))
+                leaderboard_data.append((user_id, user_name, total_copies, updated_at))
             else:
                 collected_ids = {entry.objekt.id for entry in collected_objekts}
                 collected_count = len(collected_ids)
                 total_count = len(total_objekts_ids)
                 percent_complete = (collected_count / total_count) * 100 if total_count > 0 else 0
-                leaderboard_data.append((user_id, user_name, percent_complete, collected_count, total_count))
+                leaderboard_data.append((user_id, user_name, percent_complete, updated_at, collected_count, total_count))
 
-        return sorted(leaderboard_data, key=lambda x: x[2], reverse=True)
+        return sorted(leaderboard_data, key=lambda x: (-x[2], self.safe_updated_at(x[3])))
 
     def get_leaderboard_title(self, mode, member, season):
         embed_title = "GNDSG Slur Gacha Leaderboard"
@@ -164,10 +173,10 @@ class Utility(Plugin):
     def add_leaderboard_fields(self, embed, leaderboard_data, mode):
         for rank, entry in enumerate(leaderboard_data[:10], start=1):
             if mode and mode.value == "copies":
-                user_id, user_name, total_copies = entry
+                user_id, user_name, total_copies, _ = entry
                 embed.add_field(name=f"#{rank} {user_name}", value=f"**{total_copies:,}** copies held", inline=False)
             else:
-                user_id, user_name, percent_complete, collected_count, total_count = entry
+                user_id, user_name, percent_complete, _, collected_count, total_count = entry
                 embed.add_field(name=f"#{rank} {user_name}", value=f"**({collected_count:,}/{total_count:,})** | **{percent_complete:.2f}%** complete", inline=False)
 
     def select_objekts_to_give(self, unowned_objekts, all_objekts, amount):
@@ -542,11 +551,13 @@ class Utility(Plugin):
     async def como_leaderboard_command(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        leaderboard_data = await EconomyModel.all().order_by("-balance").limit(10).values("id", "balance")
+        leaderboard_data = await EconomyModel.all().order_by("-balance", "updated_at").limit(25).values("id", "balance", "updated_at")
 
         if not leaderboard_data:
             await interaction.followup.send("No como leaderboard data available.", ephemeral=True)
             return
+        
+        leaderboard_data = sorted(leaderboard_data, key=lambda x: (-x["balance"], self.safe_updated_at(x.get("updated_at"))))[:10]
         
         embed = discord.Embed(
             title="GNDSG Slur Gacha Como Leaderboard",
@@ -1373,6 +1384,36 @@ class Utility(Plugin):
         embed = get_page_embed(current_page, current_sort, ascending)
         view = InventoryView(user_id=interaction.user.id)
         await interaction.followup.send(embed=embed, view=view)
+
+    @app_commands.command(name="slur", description="Call someone a slur.")
+    @app_commands.describe(
+        user="The user to slur."
+    )
+    async def slur_command(
+        self, interaction: discord.Interaction, user: discord.User        
+    ):
+        slur = random.choice(SLURS)
+        await interaction.response.send_message(f"{interaction.user.mention} calls {user.mention} a {slur}.")
+
+    @app_commands.command(name="reset_como", description="(Admin Only) Reset a user's como to 0.")
+    @app_commands.describe(user="The user whose como will be reset.")
+    async def reset_como_command(self, interaction: discord.Interaction, user: discord.User):
+        await interaction.response.defer()
+
+        if not await self.check_admin_permissions(interaction):
+            return
+        
+        user_data, _ = await EconomyModel.get_or_create(id=user.id)
+        user_data.balance = 0
+        await user_data.save()
+
+        embed = await self.create_embed(
+            title="Como Reset",
+            description=f"**{interaction.user.mention}** has reset **{user.mention}**'s como to **100**.",
+            fields=[("New Balance,", f"{user.name} now has **100 como**.")]
+        )
+
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Utility(bot))

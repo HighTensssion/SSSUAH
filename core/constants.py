@@ -113,3 +113,17 @@ SHOP_BUY_VALUES = {
     5: 2000,
     6: 10000,
 }
+
+SLURS = [
+    "Faggot",
+    "Faggotron",
+    "Viado",
+    "Homotron",
+    "Gayass",
+    "Homo",
+    "Dyke",
+    "Bading",
+    "Bixona",
+    "Bicha",
+    "Bakla"
+]
