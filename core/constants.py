@@ -7,6 +7,7 @@ SEASON_CHOICES = [
     app_commands.Choice(name="divine01", value="divine01"),
     app_commands.Choice(name="ever01", value="ever01"),
     app_commands.Choice(name="atom02", value="atom02"),
+        app_commands.Choice(name="binary02", value="binary02"),
     app_commands.Choice(name="customs", value="gndsg01")
 ]
 
@@ -54,7 +55,8 @@ CLASS_CHOICES = [
     app_commands.Choice(name="special", value="Special"),
     app_commands.Choice(name="welcome", value="Welcome"),
     app_commands.Choice(name="zero", value="Zero"),
-    app_commands.Choice(name="premier", value="Premier")
+    app_commands.Choice(name="premier", value="Premier"),
+    app_commands.Choice(name="motion", value="Motion")
 ]
 
 RARITY_CHOICES = [
@@ -91,6 +93,7 @@ BANNER_CHOICES = [
     app_commands.Choice(name="divine01", value="Divine01"),
     app_commands.Choice(name="ever01", value="Ever01"),
     app_commands.Choice(name="atom02", value="Atom02"),
+        app_commands.Choice(name="binary02", value="Binary02"),
     app_commands.Choice(name="rateup", value="rateup")
 ]
 

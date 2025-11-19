@@ -91,7 +91,9 @@ class EconomyPlugin(Plugin):
             description=f"You received **{como_amount:,} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=color
         )
-        if objekt.image_url:
+        if objekt.class_ == "motion" and objekt.front_media:
+            embed.add_field(name="Preview", value=f"[Click here to view the motion video]({card.frontMedia})", inline=False)
+        elif objekt.image_url:
             embed.set_image(url=objekt.image_url)
         if reminders:
             embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
@@ -109,7 +111,9 @@ class EconomyPlugin(Plugin):
             description=f"You received **{como_amount:,} como** and **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=color
         )
-        if objekt.image_url:
+        if objekt.class_ == "motion" and objekt.front_media:
+            embed.add_field(name="Preview", value=f"[Click here to view the motion video]({card.frontMedia})", inline=False)
+        elif objekt.image_url:
             embed.set_image(url=objekt.image_url)
         if reminders:
             embed.set_footer(text=f"Reminder: {', '.join(reminders)} command(s) are ready!")
@@ -125,12 +129,12 @@ class EconomyPlugin(Plugin):
 
     async def handle_rateup_banner(self, rarity_choice: int):
         if rarity_choice == 1:
-            sub_rarity = ["Atom02", "GNDSG01"]
+            sub_rarity = ["Binary02", "GNDSG01"]
             sub_weights = [0.3, 0.7]
             season_choice = await self.rarity_choice(sub_rarity, sub_weights)
             return await ObjektModel.filter(season=season_choice, rarity=rarity_choice).values_list("id", flat=True)
         else:
-            return await ObjektModel.filter(Q(season="Atom02"), rarity=rarity_choice).values_list("id", flat=True)
+            return await ObjektModel.filter(Q(season="Binary02"), rarity=rarity_choice).values_list("id", flat=True)
 
     async def handle_specific_banner(self, rarity_choice: int, banner: str):
         if rarity_choice == 1:
@@ -337,7 +341,12 @@ class EconomyPlugin(Plugin):
 
         embed = discord.Embed(title=title, color=color)
         embed.description = f"[{card.member} {card.season[0] * int(card.season[-1])}{card.series}]({card.image_url})"
-        embed.set_image(url=card.image_url)
+        
+        if card.class_ == "motion" and card.front_media:
+            embed.add_field(name="Preview", value=f"[Click here to view the motion video]({card.frontMedia})", inline=False)
+        elif card.image_url:
+            embed.set_image(url=card.image_url)
+        
         embed.set_footer(text=footer_text)
 
         return embed
@@ -567,7 +576,9 @@ class EconomyPlugin(Plugin):
             description=f"Your chase objekt has been set to **{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}**!",
             color=int(objekt.background_color.replace("#", ""), 16) if objekt.background_color else 0x0f0
         )
-        if objekt.image_url:
+        if objekt.class_ == "motion" and objekt.front_media:
+            embed.add_field(name="Preview", value=f"[Click here to view the motion video]({card.frontMedia})", inline=False)
+        elif objekt.image_url:
             embed.set_image(url=objekt.image_url)
 
         await interaction.followup.send(embed=embed)
@@ -743,7 +754,10 @@ class EconomyPlugin(Plugin):
             description=f"[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})",
             color=color
         )
-        embed.set_image(url=objekt.image_url)
+        if objekt.class_ == "motion" and objekt.front_media:
+            embed.add_field(name="Preview", value=f"[Click here to view the motion video]({card.frontMedia})", inline=False)
+        elif objekt.image_url:
+            embed.set_image(url=objekt.image_url)
 
         confirmation_message = (
             f"{interaction.user.mention} sent **[{objekt.member} {objekt.season[0] * int(objekt.season[-1])}{objekt.series}]({objekt.image_url})** to {recipient.mention}!"

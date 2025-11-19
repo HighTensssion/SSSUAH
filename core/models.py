@@ -25,6 +25,7 @@ class ObjektModel(Model):
     image_url: str | None = fields.TextField(null=True)
     background_color: str | None = fields.TextField(null=True)
     rarity: int = fields.BigIntField(default=1)
+    front_media: str | None = fields.TextField(null=True)
 
     class Meta:
         table = "objekts"
